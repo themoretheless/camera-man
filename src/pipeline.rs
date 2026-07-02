@@ -204,7 +204,7 @@ mod tests {
 
     impl FrameSource for FailingSource {
         fn latest_frame(&mut self) -> Result<Option<CapturedFrame>, CameraManError> {
-            Err(CameraManError::Capture(String::from("simulated failure")))
+            Err(CameraManError::capture("simulated failure"))
         }
     }
 

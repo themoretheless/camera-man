@@ -31,6 +31,12 @@ src/frame.rs
   FrameMetadata
   CapturedFrame
 
+src/frame_transport.rs
+  FrameSpoolSink
+  TransportFrame
+  read_latest_frame
+  default_frame_spool_path
+
 src/layout.rs
   CompositionLayout
   GridLayout
@@ -55,7 +61,6 @@ src/capture.rs
 src/virtual_camera.rs
   VirtualCameraSink
   MemorySink
-  UnsupportedVirtualCameraSink
 
 src/ppm.rs
   write_ppm
@@ -70,6 +75,14 @@ src/main.rs
   CLI entry point
   demo renderer
   pipeline demo
+  app/system-extension bundler
+
+src/extension_main.rs
+  Rust CoreMediaIO provider process target
+  virtual device registration
+  1920x1080 BGRA/30fps source stream
+  frame-spool reader
+  CMSampleBuffer output with placeholder fallback
 
 src/app.rs
   eframe desktop app
@@ -110,8 +123,35 @@ NokhwaCameraDiscovery
   -> ThreadedNokhwaFrameSource
   -> latest CapturedFrame
   -> Compositor
-  -> preview texture / PPM export
+  -> preview texture / FrameSpoolSink / PPM export
 ```
+
+System-extension packaging:
+
+```text
+cargo run -- bundle
+  -> target/CameraMan.app
+  -> Contents/Library/SystemExtensions/com.cameraman.rust.extension.systemextension
+  -> Rust cameraman-extension binary
+```
+
+Virtual camera development backend:
+
+```text
+CameraManApp
+  -> Compositor
+  -> FrameSpoolSink
+  -> $TMPDIR/cameraman-virtual-frame.bgra (or $CAMERAMAN_FRAME_SPOOL)
+  -> cameraman-extension FrameSpoolReader
+  -> CMIOExtensionProvider
+  -> CMIOExtensionDevice
+  -> CMIOExtensionStream source
+  -> BGRA CVPixelBuffer
+  -> CMSampleBuffer
+  -> sendSampleBuffer()
+```
+
+When the app has not published a frame yet, the extension generates a placeholder BGRA frame so the stream can still start predictably.
 
 ## 4. SOLID Split
 
@@ -127,6 +167,7 @@ Single Responsibility:
 - `NokhwaCameraDiscovery` only queries camera devices.
 - `ThreadedNokhwaFrameSource` only keeps capture off the UI thread.
 - `VirtualCameraSink` only receives composed frames.
+- `FrameSpoolSink` only publishes the latest composed frame.
 - `PipelineEngine` only orchestrates source -> render -> sink.
 
 Open/Closed:
@@ -259,6 +300,10 @@ Done:
 - add real camera discovery;
 - add non-blocking real camera capture;
 - add macOS app bundler with camera permission metadata.
+- add Rust `.systemextension` bundle target;
+- embed `.systemextension` inside `CameraMan.app`;
+- best-effort ad-hoc sign app and extension bundles.
+- add frame-spool transport between app and extension.
 
 Next:
 
@@ -274,10 +319,16 @@ Done:
 - device discovery;
 - frame timestamps;
 - capture error reporting;
+- Rust CoreMediaIO provider;
+- virtual device registration;
+- source stream format;
+- placeholder sample-buffer fallback;
+- composed app-frame transport into the extension stream;
+- replacement of placeholder frames with pipeline output when app frames are available;
 
 Next:
 
-- Rust virtual camera backend;
+- harden transport with app-group IPC and entitlements;
 - integration smoke tests where possible.
 
 Keep:
@@ -302,6 +353,88 @@ Next:
 - packaging;
 - release checks.
 
+## 8a. Verification Round (Three-Pass Adversarial Review)
+
+Separately from the three feature iterations above, the core and capture layers went
+through a three-pass review-fix-verify cycle (find bugs, fix them, adversarially try to
+break the fix). This section records what that cycle actually found and changed, so it
+does not get lost in `recommendation.md`'s longer backlog.
+
+Confirmed and fixed:
+
+- `layout.rs`/`render.rs`: more sources than output pixels along one axis produced
+  zero-width or zero-height cells, which underflowed `u32` subtraction in
+  `paste_aspect_fit` and panicked in debug builds (silently corrupted composition in
+  release). Fixed by making `GridLayoutCalculator::cells` compute proportional edges in
+  `u64` and having `paste_aspect_fit` clamp destination size to the cell and early-return
+  on a zero-size cell.
+- `render.rs`: nearest-neighbor sampling multiplied `u32` coordinates directly, which
+  overflows for extreme aspect ratios (for example a 2x2,000,000 source). Fixed with a
+  `u64`-computed `sample_coordinate` clamped to `source_size - 1`.
+- `frame.rs`: `byte_len` computed the pixel buffer size in `u32`, which both rejected
+  valid large frames and, per the iteration-3 adversarial pass, can wrap to exactly `0`
+  in release builds for pathological width/height pairs, so an oversized frame would be
+  accepted with an empty buffer and panic on first pixel access. Fixed with `u64` math
+  plus an explicit `MAX_FRAME_BYTES` (1 GiB) cap and a dedicated `BufferTooLarge` error;
+  `set_bgra` also got a `debug_assert` on out-of-bounds writes, which is exactly what
+  would have caught the original zero-size-cell bug earlier.
+- `ppm.rs`: `write_ppm` wrote 3 bytes per pixel with an unbuffered `File`, one syscall per
+  pixel. Wrapped in `BufWriter`.
+- `pipeline.rs`: `PipelineEngine::render_once` used to abort the whole tick if any single
+  `FrameSource` errored. It now degrades a failing source to an empty cell and reports
+  `(index, error)` pairs via `RenderReport::source_errors`; `start()` is idempotent and
+  `render_once()` before `start()` is a typed error instead of silently touching an
+  unconnected sink.
+- `error.rs`: `CameraManError::Capture` and `Io` were bare `String`s. `Capture` is now a
+  struct variant carrying a `CaptureErrorKind` (PermissionDenied / DeviceBusy /
+  DeviceNotFound / Disconnected / Unsupported / Other), classified heuristically from the
+  message text; `Io` carries `std::io::ErrorKind`. This is explicitly a best-effort
+  heuristic over vendor error strings, not a contract, and the adversarial pass found a
+  real classification bug (an overly broad `"already"` keyword misclassified `"no such
+  device, already removed"` as `DeviceBusy` instead of `DeviceNotFound`); the keyword set
+  was tightened and a regression test added. A second ambiguity (a message that plausibly
+  names two conditions at once) was judged not solvable by keyword order alone and is
+  documented as a known heuristic limitation instead of "fixed."
+- `capture.rs`: `ThreadedNokhwaFrameSource` used to fully detach its worker thread with no
+  `JoinHandle`, so `Drop` could never confirm the camera was released, and a panic inside
+  the capture loop (camera or mutex failure) killed the thread silently, leaving
+  `latest_frame()` returning a stale-but-healthy-looking last frame forever. Fixed by
+  storing the `JoinHandle` and, on `Drop`, handing it to a short-lived reaper thread that
+  joins in the background (so `Drop` itself never blocks the caller), and by wrapping each
+  capture iteration in `panic::catch_unwind` so a panic surfaces as a normal `last_error`
+  instead of vanishing.
+
+Confirmed but intentionally left open (see `recommendation.md` for the full list):
+
+- **Real race, not yet fixed**: `capture.rs`'s reaper thread means `Drop` returns before
+  the camera is guaranteed closed. `app.rs` currently drops the old `ThreadedNokhwaFrameSource`
+  and can open a new one for the same device on the very next tick (Stop immediately
+  followed by Start, or a fast camera switch), which can race the new open against the
+  still-closing old worker. Flagged as a follow-up task rather than fixed inline, because
+  `app.rs` was under active concurrent development while this review ran.
+- **`src/extension_main.rs` safety review**: this file grew into a real, from-scratch
+  CoreMediaIO Camera Extension over `objc2`/`objc2-core-media-io` during this same
+  session, in parallel with the review. A dedicated unsafe/FFI review flagged several
+  issues worth fixing before this is used for anything beyond local development:
+  `create_extension()` calls `.expect(...)` on failure, which panics and kills the whole
+  extension host process instead of failing gracefully; `formats()` and the per-frame
+  sample-buffer path recreate a `CMVideoFormatDescription` / `CMIOExtensionStreamFormat`
+  on every call instead of caching one, which both violates the "formats should not
+  change" expectation of the protocol and risks a reference leak per call under the Core
+  Foundation Create Rule; a stream handle is stored as a raw `usize` and re-retained by
+  address from another thread instead of holding a proper `Retained<CMIOExtensionStream>`;
+  `connectClient:error:` and `authorizedToStartStreamForClient:` unconditionally return
+  `true`, so any local process can attach; there is no `catch_unwind` around the
+  `define_class!` callback bodies, so a Rust panic could unwind across the Objective-C
+  runtime boundary and abort the host; and `keep_alive` is a `sleep(60s)` loop rather than
+  a real run loop (`CFRunLoopRun` or equivalent). None of this is fixed yet; treat the
+  extension as a development-only prototype until it is.
+- Everything else the review surfaced that is still open (dropped-frame metrics, render
+  loop independent of the UI thread, `Send` bounds for a future multi-threaded pipeline,
+  persistence, localization, and the rest) is tracked in `recommendation.md`, which was
+  re-audited item by item against the code during this round rather than trusted at face
+  value.
+
 ## 9. How To Learn The Project
 
 Read in this order:
@@ -311,9 +444,10 @@ Read in this order:
 3. `src/render.rs`
 4. `src/camera.rs`
 5. `src/virtual_camera.rs`
-6. `src/pipeline.rs`
-7. `src/ppm.rs`
-8. `src/app.rs`
-9. `src/main.rs`
+6. `src/frame_transport.rs`
+7. `src/pipeline.rs`
+8. `src/ppm.rs`
+9. `src/app.rs`
+10. `src/main.rs`
 
 That order starts with pure data, then pure math, then orchestration, then entry points.

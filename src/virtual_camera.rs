@@ -45,22 +45,3 @@ impl VirtualCameraSink for MemorySink {
         self.connected = false;
     }
 }
-
-#[derive(Debug, Default)]
-pub struct UnsupportedVirtualCameraSink;
-
-impl VirtualCameraSink for UnsupportedVirtualCameraSink {
-    fn connect(&mut self) -> Result<(), CameraManError> {
-        Err(CameraManError::VirtualCameraUnavailable(
-            "the macOS CoreMediaIO backend has not been implemented in Rust yet",
-        ))
-    }
-
-    fn send(&mut self, _frame: &Frame) -> Result<(), CameraManError> {
-        Err(CameraManError::VirtualCameraUnavailable(
-            "the macOS CoreMediaIO backend has not been implemented in Rust yet",
-        ))
-    }
-
-    fn disconnect(&mut self) {}
-}

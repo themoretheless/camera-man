@@ -41,10 +41,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn print_status() {
     let config = VirtualCameraConfig::default();
     println!("CameraMan (Rust)");
-    println!("Virtual camera backend: NOT IMPLEMENTED yet (planned)");
+    println!("Virtual camera backend: Rust CoreMediaIO system-extension provider");
     println!(
-        "Planned virtual camera: {} ({})",
+        "Virtual camera: {} ({})",
         config.device_name, config.device_uid
+    );
+    println!("Extension stream: 1920x1080 30fps BGRA app-frame spool with placeholder fallback");
+    println!(
+        "Install note: macOS still requires system-extension approval and proper release signing/notarization."
     );
     println!(
         "Output format: {}x{} {}fps {:?}",
@@ -242,10 +246,10 @@ fn sign_path(path: impl AsRef<OsStr>) {
         .args(["--force", "--sign", "-", "--timestamp=none"])
         .arg(path)
         .status();
-    if let Ok(status) = status {
-        if status.success() {
-            return;
-        }
+    if let Ok(status) = status
+        && status.success()
+    {
+        return;
     }
     eprintln!("warning: codesign failed or is unavailable; bundle left unsigned");
 }
@@ -262,10 +266,10 @@ fn sign_path_with_entitlements(path: impl AsRef<OsStr>, entitlements: impl AsRef
         .arg(entitlements)
         .arg(path)
         .status();
-    if let Ok(status) = status {
-        if status.success() {
-            return;
-        }
+    if let Ok(status) = status
+        && status.success()
+    {
+        return;
     }
     eprintln!("warning: codesign with entitlements failed or is unavailable; bundle left unsigned");
 }

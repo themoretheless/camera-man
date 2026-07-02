@@ -1,12 +1,13 @@
 use crate::camera::{CameraDevice, CameraDiscovery, FrameSource};
 use crate::error::CameraManError;
 use crate::frame::{CapturedFrame, Frame, FrameMetadata, PixelFormat};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 pub struct NokhwaCameraDiscovery;
@@ -30,10 +31,22 @@ pub struct NokhwaFrameSource {
     sequence: u64,
 }
 
+/// Captures on a background thread so the caller (typically the UI render
+/// loop) never blocks on `nokhwa::Camera::frame()`.
+///
+/// Caveat (не проверено across all backends): nokhwa's per-frame read can
+/// block indefinitely if the device stalls, and there is no cancellation
+/// hook. `stop` is only observed BETWEEN frames, so a wedged camera can keep
+/// the worker thread (and the open device) alive past `Drop`. To avoid
+/// freezing the dropping thread on that same wedge, `Drop` does not join the
+/// worker directly; it hands the `JoinHandle` to a short-lived reaper thread
+/// that joins in the background, so the OS thread is still reclaimed once
+/// the camera call unblocks, without ever blocking the caller.
 pub struct ThreadedNokhwaFrameSource {
     latest: Arc<Mutex<Option<CapturedFrame>>>,
-    last_error: Arc<Mutex<Option<String>>>,
+    last_error: Arc<Mutex<Option<CameraManError>>>,
     stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
 }
 
 impl NokhwaFrameSource {
@@ -102,40 +115,74 @@ impl ThreadedNokhwaFrameSource {
         let worker_stop = Arc::clone(&stop);
         let worker_id = id.to_string();
 
-        thread::spawn(move || {
-            let mut source = match NokhwaFrameSource::open_id(&worker_id) {
-                Ok(source) => source,
-                Err(error) => {
-                    *worker_last_error
-                        .lock()
-                        .expect("camera error mutex poisoned") = Some(error.to_string());
-                    return;
-                }
-            };
-
-            while !worker_stop.load(Ordering::Relaxed) {
-                match source.latest_frame() {
-                    Ok(frame) => {
-                        *worker_latest.lock().expect("camera frame mutex poisoned") = frame;
-                        *worker_last_error
-                            .lock()
-                            .expect("camera error mutex poisoned") = None;
-                    }
-                    Err(error) => {
-                        *worker_last_error
-                            .lock()
-                            .expect("camera error mutex poisoned") = Some(error.to_string());
-                    }
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-        });
+        let worker = thread::Builder::new()
+            .name(format!("camera-capture-{id}"))
+            .spawn(move || {
+                run_capture_worker(&worker_id, &worker_latest, &worker_last_error, &worker_stop);
+            })
+            .expect("failed to spawn camera capture thread");
 
         Self {
             latest,
             last_error,
             stop,
+            worker: Some(worker),
         }
+    }
+}
+
+/// Body of the background capture loop. Runs until `stop` is set or the
+/// initial `open_id` fails. A panic inside a single iteration (camera or
+/// mutex failure) is caught so it surfaces as a normal error on the
+/// `last_error` slot instead of silently killing the thread with no signal:
+/// without this, `latest_frame()` would keep returning the last-known-good
+/// frame forever and the preview would look frozen-but-healthy.
+fn run_capture_worker(
+    id: &str,
+    latest: &Arc<Mutex<Option<CapturedFrame>>>,
+    last_error: &Arc<Mutex<Option<CameraManError>>>,
+    stop: &Arc<AtomicBool>,
+) {
+    let mut source = match NokhwaFrameSource::open_id(id) {
+        Ok(source) => source,
+        Err(error) => {
+            *last_error.lock().expect("camera error mutex poisoned") = Some(error);
+            return;
+        }
+    };
+
+    while !stop.load(Ordering::Relaxed) {
+        let outcome = panic::catch_unwind(AssertUnwindSafe(|| source.latest_frame()));
+        match outcome {
+            Ok(Ok(frame)) => {
+                *latest.lock().expect("camera frame mutex poisoned") = frame;
+                *last_error.lock().expect("camera error mutex poisoned") = None;
+            }
+            Ok(Err(error)) => {
+                *last_error.lock().expect("camera error mutex poisoned") = Some(error);
+            }
+            Err(panic_payload) => {
+                let message = panic_message(&panic_payload);
+                *last_error.lock().expect("camera error mutex poisoned") = Some(
+                    CameraManError::capture(format!("capture worker panicked: {message}")),
+                );
+                // The camera object may be in an inconsistent state after a
+                // panic unwound through it; stop rather than loop on a
+                // possibly-corrupt source.
+                return;
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        String::from("unknown panic payload")
     }
 }
 
@@ -147,7 +194,7 @@ impl FrameSource for ThreadedNokhwaFrameSource {
             .expect("camera error mutex poisoned")
             .clone()
         {
-            return Err(CameraManError::Capture(error));
+            return Err(error);
         }
         Ok(self
             .latest
@@ -160,6 +207,15 @@ impl FrameSource for ThreadedNokhwaFrameSource {
 impl Drop for ThreadedNokhwaFrameSource {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        // Join off the calling thread: see the struct doc for why we cannot
+        // join synchronously here without risking a UI freeze.
+        if let Some(worker) = self.worker.take() {
+            let _ = thread::Builder::new()
+                .name(String::from("camera-capture-reaper"))
+                .spawn(move || {
+                    let _ = worker.join();
+                });
+        }
     }
 }
 
@@ -170,6 +226,11 @@ pub fn capture_one_with_timeout(
     let id = id.to_string();
     let (sender, receiver) = mpsc::channel();
 
+    // If this times out, the spawned thread is left detached: nokhwa has no
+    // cancellation hook, so the camera stays open until `open_id`/`frame()`
+    // unblocks on its own and the thread exits (send() then fails silently
+    // because the receiver is gone). Callers should treat a timeout here as
+    // "camera may still be warming up", not "camera is free again".
     thread::spawn(move || {
         let result = (|| {
             let mut source = NokhwaFrameSource::open_id(&id)?;
@@ -178,11 +239,18 @@ pub fn capture_one_with_timeout(
         let _ = sender.send(result);
     });
 
-    receiver.recv_timeout(timeout).map_err(|_| {
-        CameraManError::Capture(format!("timed out after {}ms", timeout.as_millis()))
-    })?
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(CameraManError::capture(format!(
+            "timed out after {}ms waiting for a frame",
+            timeout.as_millis()
+        ))),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(CameraManError::capture(
+            "capture thread exited without sending a result",
+        )),
+    }
 }
 
 fn nokhwa_error(error: nokhwa::NokhwaError) -> CameraManError {
-    CameraManError::Capture(error.to_string())
+    CameraManError::capture(error.to_string())
 }

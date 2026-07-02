@@ -4,13 +4,13 @@ use std::time::{Duration, Instant};
 use camera_man::FrameSource;
 use camera_man::{
     CameraDevice, CameraDiscovery, CapturedFrame, CompositionLayout, Compositor, Frame,
-    NokhwaCameraDiscovery, PixelFormat, SyntheticFrameSource, ThreadedNokhwaFrameSource,
-    VideoFormat, write_ppm,
+    FrameSpoolSink, NokhwaCameraDiscovery, PixelFormat, SyntheticFrameSource,
+    ThreadedNokhwaFrameSource, VideoFormat, VirtualCameraSink, write_ppm,
 };
 use eframe::egui;
 
-const PREVIEW_WIDTH: u32 = 960;
-const PREVIEW_HEIGHT: u32 = 540;
+const OUTPUT_WIDTH: u32 = 1920;
+const OUTPUT_HEIGHT: u32 = 1080;
 const SOURCE_WIDTH: u32 = 320;
 const SOURCE_HEIGHT: u32 = 240;
 
@@ -104,6 +104,10 @@ pub struct CameraManApp {
     measured_fps: f32,
     preview: Option<Frame>,
     preview_texture: Option<egui::TextureHandle>,
+    virtual_output_enabled: bool,
+    virtual_sink: FrameSpoolSink,
+    virtual_connected: bool,
+    virtual_frames_sent: u64,
     export_path: PathBuf,
 }
 
@@ -112,8 +116,8 @@ impl CameraManApp {
         configure_style(&cc.egui_ctx);
 
         let format = VideoFormat {
-            width: PREVIEW_WIDTH,
-            height: PREVIEW_HEIGHT,
+            width: OUTPUT_WIDTH,
+            height: OUTPUT_HEIGHT,
             fps: 30,
             pixel_format: PixelFormat::Bgra8,
         };
@@ -162,6 +166,10 @@ impl CameraManApp {
             measured_fps: 0.0,
             preview: None,
             preview_texture: None,
+            virtual_output_enabled: true,
+            virtual_sink: FrameSpoolSink::default(),
+            virtual_connected: false,
+            virtual_frames_sent: 0,
             export_path: PathBuf::from("target/camera-man-app-preview.ppm"),
         };
         app.refresh_real_devices(false);
@@ -208,6 +216,7 @@ impl CameraManApp {
         self.real_source = None;
         self.waiting_for_camera = false;
         self.measured_fps = 0.0;
+        self.disconnect_virtual_output();
     }
 
     fn render_preview(&mut self, ctx: &egui::Context, allow_open_camera: bool) {
@@ -248,6 +257,7 @@ impl CameraManApp {
                 self.frames_rendered += 1;
                 self.capture_error_streak = 0;
                 self.update_texture(ctx, &frame);
+                self.send_virtual_frame(&frame);
                 self.preview = Some(frame);
             }
             Err(error) => {
@@ -362,6 +372,41 @@ impl CameraManApp {
             },
             None => {
                 self.set_event("Nothing to export yet", true);
+            }
+        }
+    }
+
+    fn disconnect_virtual_output(&mut self) {
+        if self.virtual_connected {
+            self.virtual_sink.disconnect();
+            self.virtual_connected = false;
+        }
+    }
+
+    fn send_virtual_frame(&mut self, frame: &Frame) {
+        if !self.running || !self.virtual_output_enabled {
+            return;
+        }
+
+        if !self.virtual_connected {
+            match self.virtual_sink.connect() {
+                Ok(()) => {
+                    self.virtual_connected = true;
+                }
+                Err(error) => {
+                    self.set_event(error.to_string(), true);
+                    return;
+                }
+            }
+        }
+
+        match self.virtual_sink.send(frame) {
+            Ok(()) => {
+                self.virtual_frames_sent += 1;
+            }
+            Err(error) => {
+                self.virtual_connected = false;
+                self.set_event(error.to_string(), true);
             }
         }
     }
@@ -609,22 +654,29 @@ impl CameraManApp {
         ui.separator();
         ui.add_space(12.0);
         ui.label("Output");
-        ui.monospace(format!(
-            "{}x{} BGRA @ 30 fps",
-            PREVIEW_WIDTH, PREVIEW_HEIGHT
-        ));
+        ui.monospace(format!("{}x{} BGRA @ 30 fps", OUTPUT_WIDTH, OUTPUT_HEIGHT));
         ui.monospace(self.export_path.display().to_string());
         ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new("Virtual camera: not implemented yet")
-                .color(COLOR_WARNING)
-                .small(),
-        );
+        if ui
+            .checkbox(&mut self.virtual_output_enabled, "Virtual camera output")
+            .changed()
+            && !self.virtual_output_enabled
+        {
+            self.disconnect_virtual_output();
+        }
+        ui.monospace(self.virtual_sink.path().display().to_string());
+        ui.add_space(4.0);
+        let virtual_label = if self.virtual_output_enabled {
+            "Virtual camera output: enabled"
+        } else {
+            "Virtual camera output: off"
+        };
+        ui.label(egui::RichText::new(virtual_label).color(COLOR_DIM).small());
     }
 
     fn preview_ui(&self, ui: &mut egui::Ui) {
         let available = ui.available_size();
-        let target_ratio = PREVIEW_WIDTH as f32 / PREVIEW_HEIGHT as f32;
+        let target_ratio = OUTPUT_WIDTH as f32 / OUTPUT_HEIGHT as f32;
         let mut preview_size = egui::vec2(available.x, available.x / target_ratio);
         if preview_size.y > available.y {
             preview_size.y = available.y;
@@ -703,6 +755,8 @@ impl CameraManApp {
             ui.label(format!("sources {}", self.selected_count()));
             ui.separator();
             ui.label(format!("frames {}", self.frames_rendered));
+            ui.separator();
+            ui.label(format!("virtual {}", self.virtual_frames_sent));
             ui.separator();
             ui.label(format!("layout {}", self.layout.name()));
         });

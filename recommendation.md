@@ -92,14 +92,14 @@
 86. Улучшение: добавить `VideoFormat::validate`.
 87. Проблема: fps может быть 0.
 88. Улучшение: запретить zero fps.
-89. Проблема: dimensions могут быть слишком большими.
-90. Улучшение: добавить max dimensions.
-91. Проблема: byte length conversion использует `as usize`.
-92. Улучшение: сделать checked conversion везде.
-93. Проблема: ошибки не имеют кодов.
-94. Улучшение: добавить стабильные error codes.
-95. Проблема: ошибки не имеют recovery action.
-96. Улучшение: добавить `recovery_hint`.
+89. Сделано: `frame.rs::byte_len` считает размер буфера в `u64` и ограничен `MAX_FRAME_BYTES` (1 GiB) через `CameraManError::BufferTooLarge`.
+90. Сделано: max dimensions реализован как `MAX_FRAME_BYTES` (ограничение по суммарному размеру буфера, а не по width/height по отдельности).
+91. Сделано: byte length больше не считается через `as usize` без проверки, вся арифметика в `byte_len` идёт в `u64` с явным `usize::try_from`.
+92. Частично: `byte_len` теперь checked, но точечные `as`-касты остаются в другом коде (`pixel_offset`, `edge`, `sqrt as u32` и т.п.) - не аудировано полностью.
+93. Частично: у ошибок нет числовых кодов, но появилась типизированная классификация `CaptureErrorKind` (PermissionDenied/DeviceBusy/DeviceNotFound/Disconnected/Unsupported/Other) для `CameraManError::Capture`, полученная эвристическим разбором текста ошибки.
+94. Частично: см. п.93 - `CaptureErrorKind` это не "стабильный код" в смысле ABI/протокола, а внутренняя эвристика над текстом сообщения; задокументирована как best-effort, не контракт.
+95. Частично: явного поля `recovery_hint` в `CameraManError` нет, но `CaptureErrorKind` даёт достаточно информации, чтобы UI показал разный совет (например для PermissionDenied - "открой Privacy settings"); текст рекомендаций пока живёт в `app.rs`, а не в модели ошибки.
+96. Открыто: типизированного `recovery_hint`-метода на `CameraManError`/`CaptureErrorKind` всё ещё нет, только неявная связь через `match` в UI-коде.
 97. Проблема: CLI пока только status/demo.
 98. Улучшение: добавить `--format`.
 99. Улучшение: добавить `--layout`.
@@ -167,10 +167,10 @@
 158. Улучшение: добавить 720p, 1080p, 4K presets.
 159. Проблема: нет fps switching.
 160. Улучшение: добавить 15, 30, 60 fps presets.
-161. Проблема: macOS virtual camera backend не реализован.
-162. Улучшение: реализовать backend за `VirtualCameraSink`.
-163. Проблема: CoreMediaIO backend будет unsafe-heavy.
-164. Улучшение: изолировать unsafe в одном модуле.
+161. Сделано: macOS CoreMediaIO backend теперь стартует из Rust extension.
+162. Сделано: создан Rust `.systemextension` bundle target.
+163. Проблема: CoreMediaIO provider всё ещё будет unsafe-heavy.
+164. Улучшение: изолировать unsafe CMIO provider в extension binary.
 165. Проблема: FFI может протекать в core.
 166. Улучшение: не экспортировать platform types из core.
 167. Проблема: sample buffer ownership сложен.
@@ -181,13 +181,13 @@
 172. Улучшение: добавить `Timestamp` abstraction.
 173. Проблема: backend errors будут OSStatus.
 174. Улучшение: конвертировать OSStatus в `CameraManError`.
-175. Проблема: system extension packaging сложен.
-176. Улучшение: сначала сделать backend proof-of-concept.
-177. Проблема: pure Rust system extension может требовать Objective-C runtime bindings.
+175. Сделано: system extension packaging добавлен.
+176. Сделано: backend proof-of-concept внутри extension добавлен.
+177. Сделано: pure Rust system extension использует Objective-C runtime bindings через `objc2`.
 178. Улучшение: исследовать `objc2` ecosystem.
 179. Проблема: release signing не должен быть в core.
 180. Улучшение: вынести packaging в scripts.
-181. Проблема: `UnsupportedVirtualCameraSink` может быть забыт.
+181. Сделано: `UnsupportedVirtualCameraSink` убран из публичного API.
 182. Улучшение: пометить его как temporary.
 183. Сделано: есть `pipeline-demo` через `PipelineEngine`.
 184. Сделано: добавлен `PpmSequenceSink`.
@@ -434,8 +434,8 @@
 416. PR 16: done, add real camera list command.
 417. PR 17: done, add real camera frame capture with timeout.
 418. PR 18: done, add preview file output from real camera path.
-419. PR 19: research virtual camera backend.
-420. PR 20: isolate unsafe backend wrappers.
+419. PR 19: done, research virtual camera backend.
+420. PR 20: started, isolate unsafe backend wrappers.
 421. PR 21: prototype CoreMediaIO device discovery in Rust.
 422. PR 22: prototype sink connection in Rust.
 423. PR 23: send one synthetic frame to virtual sink.
@@ -510,9 +510,110 @@
 492. Следующий шаг: add app-level integration checks.
 493. Следующий шаг: add real render loop backend.
 494. Следующий шаг: test bundled app camera permission flow.
-495. Следующий шаг: research Rust CoreMediaIO backend.
+495. Сделано: bridge composed frames into active Rust CoreMediaIO provider через frame spool.
 496. Следующий шаг: replace synthetic app sources with Rust capture.
 497. Следующий шаг: keep tests green.
 498. Следующий шаг: keep docs synced.
 499. Следующий шаг: make small commits.
-500. Следующий шаг: build the real Rust backend behind the existing traits.
+500. Следующий шаг: harden frame transport with app-group IPC and release entitlements.
+
+## Итерация 6: раунд ревью (найти -> исправить -> проверить, x3), статус на текущий снэпшот
+
+Пункты 1-500 выше - это живой бэклог, который вели несколько параллельных сессий; часть
+пунктов была помечена "Сделано" до того, как код это подтверждал. Этот раздел - результат
+отдельного трёхпроходного ревью (find bugs -> fix -> adversarially verify) над ядром,
+capture-слоем и (частично, только чтением) новым CMIO-расширением. Полное описание
+исправленных багов - в `arhitecture.md`, раздел "8a. Verification Round". Здесь - то, что
+ревью нашло и что из этого осталось открытым.
+
+Исправлено за три прохода (подробности в arhitecture.md 8a):
+
+501. Сделано: паника от zero-width/zero-height ячеек при количестве источников больше
+     ширины/высоты вывода (`layout.rs::cells`, `render.rs::paste_aspect_fit`).
+502. Сделано: переполнение `u32` в nearest-neighbor сэмплинге для кадров с экстремальным
+     аспектом (`render.rs::sample_coordinate`, теперь `u64`).
+503. Сделано: `byte_len` в `u32` мог откатиться (wrap) в 0 для патологических width x height
+     и пропустить кадр с пустым буфером; теперь `u64` + `MAX_FRAME_BYTES`.
+504. Сделано: `write_ppm` писал по 3 байта без буферизации; обёрнут в `BufWriter`.
+505. Сделано: один упавший `FrameSource` убивал весь тик `PipelineEngine::render_once`;
+     теперь деградирует до пустой ячейки и репортит `source_errors`.
+506. Сделано: `PipelineEngine::start()` не был идемпотентен, `render_once()` до `start()`
+     тихо трогал неподключенный sink; оба случая теперь явные.
+507. Сделано: `CameraManError::Capture`/`Io` были голыми `String`; теперь типизированная
+     `CaptureErrorKind` и `std::io::ErrorKind`.
+508. Сделано: `ThreadedNokhwaFrameSource` не хранил `JoinHandle` (поток навсегда утекал) и
+     паника внутри цикла захвата убивала поток без сигнала (превью выглядело живым, но
+     кадр был заморожен); добавлены reaper-поток для неблокирующего join в `Drop` и
+     `catch_unwind` вокруг тела цикла.
+509. Сделано: адверсарial-проверка нашла реальную коллизию в `CaptureErrorKind::classify`
+     (широкое слово "already" перекрывало "not found"); ключевые слова уточнены, добавлен
+     регрессионный тест.
+
+Найдено адверсарial-проверкой и сознательно оставлено открытым:
+
+510. Открыто: `capture_one_with_timeout` при таймауте оставляет поток отсоединённым,
+     камера может остаться занятой дольше таймаута - задокументировано как ограничение,
+     не исправлено (nokhwa не даёт хука отмены).
+511. Открыто: гонка "Stop -> быстрый Start на той же камере": `Drop` у
+     `ThreadedNokhwaFrameSource` не гарантирует, что камера уже освобождена к моменту,
+     когда `app.rs` открывает новый источник для того же id. Заведена отдельная задача
+     (`task_188f46e0`), не исправлено здесь намеренно, так как `app.rs` в момент ревью
+     менялся параллельной сессией.
+512. Открыто: `CaptureErrorKind::classify` - эвристика по приоритету ключевых слов, а не
+     разбор структурированной ошибки; сообщение, правдоподобно описывающее два состояния
+     сразу, разрешается по приоритету, а не корректно. Это осознанно задокументированное
+     ограничение, а не баг с понятным фиксом.
+
+Небезопасный/FFI-код `src/extension_main.rs` (только чтение, не редактировался, так как
+файл активно писался параллельно; полный список - в arhitecture.md 8a):
+
+513. Критично: `create_extension().expect(...)` паникует и убивает весь host-процесс
+     расширения при ошибке `addStream_error`/`addDevice_error`.
+514. Критично: `connectClient:error:` и `authorizedToStartStreamForClient:` всегда
+     возвращают `true` - подключиться может любой локальный процесс.
+515. Критично: указатель на стрим хранится как голый `usize` (`StreamHandle`) и
+     ре-ретейнится по адресу из другого потока вместо `Retained<CMIOExtensionStream>` в
+     `Arc`/`Mutex`.
+516. Проблема: `formats()` и путь создания сэмпл-буфера пересоздают
+     `CMVideoFormatDescription`/`CMIOExtensionStreamFormat` на каждый вызов вместо
+     кэширования одного значения - нарушает контракт "formats не меняются" и рискует
+     утечкой ссылки по Core Foundation Create Rule.
+517. Проблема: нет `catch_unwind` вокруg тел методов `define_class!`; паника Rust может
+     пересечь границу Objective-C runtime и увести в abort весь host-процесс.
+518. Проблема: `keep_alive` - `sleep(60s)`-цикл вместо настоящего run loop
+     (`CFRunLoopRun` или эквивалент).
+519. Улучшение: `video_format_description()` пересоздаётся на каждый кадр внутри
+     `create_sample_buffer` (30 раз/сек) вместо переиспользования одного значения.
+520. Вывод: расширение - честный первый рабочий прототип, но не готово к чему-либо за
+     пределами локальной разработки, пока пункты 513-517 не закрыты.
+
+Ещё открытые пункты из UI-ревью `app.rs` (сам файл не редактировался в рамках этого
+раунда, см. `task_188f46e0` и дальнейшие раунды):
+
+521. Открыто: переключение Synthetic/Real молча останавливает работающий стрим без
+     объяснения в статус-баре.
+522. Открыто: после переключения в Real режим старый synthetic-кадр может показываться
+     под бейджем REAL до первого реального кадра.
+523. Открыто: `measured_fps` считает тики цикла рендера, а не реально отрисованные кадры -
+     показывает ненулевой fps в состоянии "Waiting for camera".
+524. Открыто: смена выбранной камеры не сбрасывает `capture_error_streak`, первая ошибка
+     новой камеры может быть подавлена.
+525. Открыто: левая панель - фиксированная колонка на ручной раскладке, а не
+     `egui::SidePanel` (нет resize).
+526. Открыто: нет персистентности (позиция окна, выбранный layout/источники/путь экспорта
+     не сохраняются между запусками; `eframe` персистентность не подключена).
+527. Открыто: `Refresh cameras` и обнаружение при старте блокируют UI-поток без спиннера.
+528. Открыто: глобальный хоткей Space может задваивать срабатывание с фокусной кнопкой
+     (не проверено полностью, но правдоподобно по API egui 0.35).
+529. Открыто: LIVE/PAUSED-бейдж на превью не исчезает и перекрывает контент, слот
+     `StatusEvent` один, поэтому "тихий" статус может затирать липкую ошибку.
+
+Итог по разделу: 3 прохода, суммарно на порядок больше находок, чем помещается в этот файл
+(включая давнюю Swift-эру проекта, ещё до перехода на чистый Rust), из них выше перечислены
+только те, что либо исправлены в этом раунде, либо остаются открытыми и не задублированы с
+пунктами 1-500. Отдельный построчный аудит пунктов 1-500 против кода на момент раунда дал:
+для диапазона 1-250 - done 89, partial 35, open 125, obsolete 1 (из 250); для диапазона
+251-500 - done 70, partial 37, open 143, obsolete 0 (из 250). Полные построчные таблицы
+аудита (какой именно код подтверждает или опровергает каждый пункт) сохранены вне
+репозитория в рамках этой сессии ревью; в сам файл перенесены только точечные исправления
+(см. правки 89-96 выше), чтобы не раздувать документ до нечитаемого размера.

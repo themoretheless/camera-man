@@ -167,18 +167,35 @@ fn bundle_app() -> Result<(), Box<dyn std::error::Error>> {
     let mut info = fs::File::create(contents.join("Info.plist"))?;
     info.write_all(INFO_PLIST.as_bytes())?;
 
-    let app_entitlements = PathBuf::from("target/signing/CameraMan.entitlements");
-    if let Some(parent) = app_entitlements.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut entitlements = fs::File::create(&app_entitlements)?;
-    entitlements.write_all(APP_ENTITLEMENTS.as_bytes())?;
-
     let mut pkg_info = fs::File::create(contents.join("PkgInfo"))?;
     pkg_info.write_all(b"APPL????")?;
 
     sign_path(&app_exe);
-    sign_path_with_entitlements(&bundle, &app_entitlements);
+
+    // com.apple.developer.system-extension.install is a *restricted*
+    // entitlement: AMFI kills the whole process at launch (SIGKILL, no
+    // output at all) if it is present on an ad-hoc signature without a
+    // matching provisioning profile. Nothing in this codebase currently
+    // calls the SystemExtensions activation API, so the entitlement buys
+    // nothing today; only embed it once a real Developer ID identity is
+    // supplied via CODESIGN_IDENTITY, so `cargo run -- bundle` stays
+    // launchable for local development out of the box.
+    if signing_identity() == AD_HOC_IDENTITY {
+        sign_path(&bundle);
+        eprintln!(
+            "note: signed ad-hoc (no CODESIGN_IDENTITY set), so the restricted \
+             system-extension.install entitlement was left out; the app will launch, \
+             but system-extension activation needs a real Apple Developer ID identity."
+        );
+    } else {
+        let app_entitlements = PathBuf::from("target/signing/CameraMan.entitlements");
+        if let Some(parent) = app_entitlements.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut entitlements = fs::File::create(&app_entitlements)?;
+        entitlements.write_all(APP_ENTITLEMENTS.as_bytes())?;
+        sign_path_with_entitlements(&bundle, &app_entitlements);
+    }
 
     println!("Created {}", bundle.display());
     println!("Launch with: open {}", bundle.display());
@@ -241,9 +258,19 @@ fn extension_bundle_path() -> PathBuf {
     PathBuf::from("target/com.cameraman.rust.extension.systemextension")
 }
 
+/// Sentinel returned by `signing_identity()` when no real identity is configured.
+const AD_HOC_IDENTITY: &str = "-";
+
+/// Reads CODESIGN_IDENTITY (e.g. "Apple Development: Jane Doe (TEAMID1234)").
+/// Defaults to ad-hoc ("-"), which is fine for plain code but cannot carry
+/// restricted entitlements: see the comment in `bundle_app`.
+fn signing_identity() -> String {
+    env::var("CODESIGN_IDENTITY").unwrap_or_else(|_| AD_HOC_IDENTITY.to_string())
+}
+
 fn sign_path(path: impl AsRef<OsStr>) {
     let status = Command::new("codesign")
-        .args(["--force", "--sign", "-", "--timestamp=none"])
+        .args(["--force", "--sign", &signing_identity(), "--timestamp=none"])
         .arg(path)
         .status();
     if let Ok(status) = status
@@ -259,7 +286,7 @@ fn sign_path_with_entitlements(path: impl AsRef<OsStr>, entitlements: impl AsRef
         .args([
             "--force",
             "--sign",
-            "-",
+            &signing_identity(),
             "--timestamp=none",
             "--entitlements",
         ])

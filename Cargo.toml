@@ -1,0 +1,21 @@
+[package]
+name = "camera-man"
+version = "0.1.0"
+edition = "2024"
+default-run = "camera-man"
+
+[lib]
+name = "camera_man"
+path = "src/lib.rs"
+
+[[bin]]
+name = "camera-man"
+path = "src/main.rs"
+
+[[bin]]
+name = "cameraman-extension"
+path = "src/extension_main.rs"
+
+[dependencies]
+eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "glow"] }
+nokhwa = { version = "0.10.11", default-features = false, features = ["decoding", "input-native"] }

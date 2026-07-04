@@ -1,619 +1,516 @@
-# CameraMan Rust-Only Recommendations
+# CameraMan Recommendations
 
-Ниже 500 пунктов для нового Rust-only направления. Старый mixed-language подход больше не является архитектурой проекта.
+Exactly 500 numbered items: done work, improvements, problems, mistakes, design notes, and review findings.
 
-## Итерация 1: чистое Rust-ядро
+## Iteration 1: Rust Core, SOLID, DRY
 
-1. Сделано: non-Rust слой удален из основной структуры.
-2. Сделано: `Cargo.toml` теперь описывает библиотеку и бинарник.
-3. Сделано: `src/lib.rs` экспортирует публичные Rust-модули.
-4. Сделано: `src/main.rs` перестал быть `Hello, world!`.
-5. Сделано: добавлен `VideoFormat`.
-6. Сделано: добавлен `VirtualCameraConfig`.
-7. Сделано: добавлен единый `CameraManError`.
-8. Сделано: добавлен `PixelFormat`.
-9. Сделано: добавлен валидируемый `Frame`.
-10. Сделано: добавлен `CompositionLayout`.
-11. Сделано: добавлен `GridLayoutCalculator`.
-12. Сделано: добавлен чистый Rust `Compositor`.
-13. Сделано: добавлен trait `FrameSource`.
-14. Сделано: добавлен trait `VirtualCameraSink`.
-15. Сделано: добавлен `PipelineEngine`.
-16. Сделано: добавлен synthetic source для демо и тестов.
-17. Сделано: добавлен memory sink для тестируемой границы.
-18. Сделано: добавлен unsupported sink как честная заглушка backend.
-19. Сделано: добавлен CLI status output.
-20. Сделано: добавлен `--demo`.
-21. Сделано: demo пишет PPM в `target/`.
-22. Сделано: тесты покрывают frame validation.
-23. Сделано: тесты покрывают layout calculation.
-24. Сделано: тесты покрывают composition.
-25. Сделано: `cargo test` проходит.
-26. Улучшение: добавить тесты на 0 камер.
-27. Улучшение: добавить тесты на 1 камеру.
-28. Улучшение: добавить тесты на 2 камеры.
-29. Улучшение: добавить тесты на 3 камеры.
-30. Улучшение: добавить тесты на 4 камеры.
-31. Улучшение: добавить тесты на 5 камер.
-32. Улучшение: добавить тесты на 8 камер.
-33. Улучшение: добавить тесты на row layout.
-34. Улучшение: добавить тесты на column layout.
-35. Улучшение: добавить тесты на grid layout.
-36. Улучшение: добавить тесты на remainder pixels.
-37. Улучшение: добавить тесты на invalid dimensions.
-38. Улучшение: добавить тесты на invalid buffer length.
-39. Улучшение: добавить тесты на unsupported pixel format.
-40. Улучшение: добавить тесты на empty input.
-41. Улучшение: добавить тест на aspect fit для tall frame.
-42. Улучшение: добавить тест на aspect fit для wide frame.
-43. Улучшение: добавить тест на centered paste.
-44. Улучшение: добавить тест на empty cell color.
-45. Улучшение: добавить тест на background color.
-46. Улучшение: добавить property tests для layout.
-47. Улучшение: добавить fuzz target для `Frame::new_checked`.
-48. Улучшение: добавить golden PPM для demo.
-49. Улучшение: добавить snapshot-style тесты без внешних crate.
-50. Улучшение: добавить benchmark для compositor.
-51. Проблема: compositor сейчас nearest-neighbor.
-52. Улучшение: добавить bilinear scaling.
-53. Проблема: compositor копирует пиксели без SIMD.
-54. Улучшение: позже добавить SIMD path.
-55. Сделано: source frames теперь имеют timestamp в `FrameMetadata`.
-56. Сделано: добавлен `FrameMetadata`.
-57. Сделано: `Frame` отделен от captured metadata.
-58. Сделано: добавлен `CapturedFrame`.
-59. Сделано: synthetic sources ведут sequence number.
-60. Улучшение: добавить monotonic frame index для реальных camera sources.
-61. Проблема: нет dropped-frame метрик.
-62. Улучшение: добавить `PipelineMetrics`.
-63. Проблема: нет render duration.
-64. Улучшение: измерять time per compose.
-65. Проблема: нет source duration.
-66. Улучшение: измерять time per source read.
-67. Проблема: нет sink duration.
-68. Улучшение: измерять time per sink send.
-69. Проблема: нет backpressure model.
-70. Улучшение: добавить frame dropping strategy.
-71. Проблема: `PipelineEngine` сейчас делает один tick.
-72. Улучшение: добавить render loop.
-73. Проблема: render loop не должен блокировать UI.
-74. Улучшение: вынести loop в отдельный worker.
-75. Проблема: нет lifecycle state.
-76. Улучшение: добавить `PipelineState`.
-77. Проблема: нет typed start report.
-78. Улучшение: добавить `StartPipelineReport`.
-79. Проблема: нет typed stop report.
-80. Улучшение: добавить `StopPipelineReport`.
-81. Проблема: нет source status.
-82. Улучшение: добавить per-source status.
-83. Проблема: нет sink status.
-84. Улучшение: добавить virtual camera status.
-85. Проблема: нет config validation.
-86. Улучшение: добавить `VideoFormat::validate`.
-87. Проблема: fps может быть 0.
-88. Улучшение: запретить zero fps.
-89. Сделано: `frame.rs::byte_len` считает размер буфера в `u64` и ограничен `MAX_FRAME_BYTES` (1 GiB) через `CameraManError::BufferTooLarge`.
-90. Сделано: max dimensions реализован как `MAX_FRAME_BYTES` (ограничение по суммарному размеру буфера, а не по width/height по отдельности).
-91. Сделано: byte length больше не считается через `as usize` без проверки, вся арифметика в `byte_len` идёт в `u64` с явным `usize::try_from`.
-92. Частично: `byte_len` теперь checked, но точечные `as`-касты остаются в другом коде (`pixel_offset`, `edge`, `sqrt as u32` и т.п.) - не аудировано полностью.
-93. Частично: у ошибок нет числовых кодов, но появилась типизированная классификация `CaptureErrorKind` (PermissionDenied/DeviceBusy/DeviceNotFound/Disconnected/Unsupported/Other) для `CameraManError::Capture`, полученная эвристическим разбором текста ошибки.
-94. Частично: см. п.93 - `CaptureErrorKind` это не "стабильный код" в смысле ABI/протокола, а внутренняя эвристика над текстом сообщения; задокументирована как best-effort, не контракт.
-95. Частично: явного поля `recovery_hint` в `CameraManError` нет, но `CaptureErrorKind` даёт достаточно информации, чтобы UI показал разный совет (например для PermissionDenied - "открой Privacy settings"); текст рекомендаций пока живёт в `app.rs`, а не в модели ошибки.
-96. Открыто: типизированного `recovery_hint`-метода на `CameraManError`/`CaptureErrorKind` всё ещё нет, только неявная связь через `match` в UI-коде.
-97. Проблема: CLI пока только status/demo.
-98. Улучшение: добавить `--format`.
-99. Улучшение: добавить `--layout`.
-100. Улучшение: добавить `--output`.
+1. Сделано: проект переведён в Rust-only основу.
+2. Сделано: `Cargo.toml` описывает библиотеку и бинарники.
+3. Сделано: `src/lib.rs` экспортирует публичные модули.
+4. Сделано: `src/main.rs` содержит CLI-вход.
+5. Сделано: `VideoFormat` централизует размер, fps и pixel format.
+6. Сделано: `VirtualCameraConfig` хранит имя и UID виртуальной камеры.
+7. Сделано: `PixelFormat::Bgra8` задаёт layout пикселя.
+8. Сделано: `Frame::new_checked` валидирует размеры и длину буфера.
+9. Сделано: `FrameMetadata` отделяет метаданные от пикселей.
+10. Сделано: `CapturedFrame` связывает кадр и метаданные.
+11. Сделано: `CompositionLayout` описывает grid, row и column.
+12. Сделано: `GridLayoutCalculator` отделён от рендера.
+13. Сделано: `Compositor` занимается только композицией.
+14. Сделано: `FrameSource` отделяет захват от рендера.
+15. Сделано: `VirtualCameraSink` отделяет вывод от рендера.
+16. Сделано: `MemorySink` даёт тестируемую sink-границу.
+17. Сделано: `PipelineEngine` собирает source -> compose -> sink.
+18. Сделано: `PpmSequenceSink` добавляет debug-output без платформенных API.
+19. Сделано: `SyntheticFrameSource` даёт стабильные тестовые источники.
+20. Сделано: CLI `status` показывает текущий backend.
+21. Сделано: CLI `demo` пишет один PPM.
+22. Сделано: CLI `pipeline-demo` пишет последовательность PPM.
+23. Сделано: CLI `check` печатает нормализованный config.
+24. Сделано: тесты покрывают frame validation.
+25. Сделано: тесты покрывают layout calculation.
+26. Сделано: тесты покрывают composition.
+27. Сделано: тесты покрывают PPM writer.
+28. Сделано: тесты покрывают pipeline ticks.
+29. Сделано: тесты покрывают failing source degradation.
+30. Сделано: тесты покрывают capture error classification.
+31. Сделано: тесты покрывают frame-spool round trip.
+32. Улучшение: добавить property tests для layout.
+33. Улучшение: добавить fuzz target для `Frame::new_checked`.
+34. Улучшение: добавить golden images для compositor.
+35. Улучшение: добавить benchmark для compositor.
+36. Улучшение: измерять render duration.
+37. Улучшение: измерять source read duration.
+38. Улучшение: измерять sink send duration.
+39. Улучшение: добавить dropped-frame metrics.
+40. Улучшение: добавить `PipelineMetrics`.
+41. Проблема: nearest-neighbor scaling даёт грубую картинку.
+42. Улучшение: добавить bilinear scaling как опцию.
+43. Улучшение: оставить nearest-neighbor как быстрый режим.
+44. Проблема: compositor пока без SIMD.
+45. Улучшение: позже добавить SIMD path для BGRA copy.
+46. Проблема: нет теста на 5 источников.
+47. Проблема: нет теста на 7 источников.
+48. Проблема: нет теста на 8 источников.
+49. Улучшение: расширить layout tests для odd counts.
+50. Улучшение: тестировать tiny output dimensions.
+51. Сделано: tiny layout не должен выходить за bounds.
+52. Сделано: zero-sized frame отвергается.
+53. Сделано: wrong buffer length отвергается.
+54. Сделано: слишком большой buffer отвергается.
+55. Проблема: `MAX_FRAME_BYTES` выбран грубо.
+56. Улучшение: связать max bytes с platform memory budget.
+57. Проблема: `CameraManError` ещё смешивает user и developer messages.
+58. Улучшение: разделить display text и diagnostic text.
+59. Улучшение: добавить structured error codes.
+60. Улучшение: добавить context chaining без внешнего crate.
+61. Проблема: `CaptureErrorKind::classify` эвристический.
+62. Улучшение: перейти на structured backend errors там, где backend позволяет.
+63. Сделано: классификация capture errors покрыта тестами.
+64. Ошибка исправлена: broad `already` мог перекрывать not-found cases.
+65. Улучшение: добавить реальные AVFoundation/nokhwa error samples.
+66. Проблема: API library пока не документирован rustdoc.
+67. Улучшение: добавить rustdoc для публичных traits.
+68. Улучшение: добавить пример создания custom `FrameSource`.
+69. Улучшение: добавить пример создания custom `VirtualCameraSink`.
+70. Проблема: `PipelineEngine` generic по sink, но sources boxed.
+71. Улучшение: оценить typed source lists для hot paths.
+72. Проблема: boxed sources проще, но имеют dynamic dispatch.
+73. Улучшение: оставить boxed API ради plugin-like расширяемости.
+74. Проблема: `PipelineEngine` не владеет render loop.
+75. Улучшение: сделать отдельный `RenderLoop` worker.
+76. Улучшение: добавить cancellation token для render loop.
+77. Улучшение: добавить bounded channel для frame reports.
+78. Проблема: backpressure model пока не формализован.
+79. Улучшение: описать drop-latest/drop-oldest strategy.
+80. Улучшение: добавить latency metric.
+81. Улучшение: добавить per-source stale-frame metric.
+82. Проблема: `Frame` всегда owns `Vec<u8>`.
+83. Улучшение: рассмотреть borrowed frame view для zero-copy paths.
+84. Улучшение: добавить row-stride aware frame view.
+85. Проблема: current frame assumes tightly packed BGRA.
+86. Улучшение: явно документировать tight packing.
+87. Улучшение: добавить conversion from padded CVPixelBuffer later.
+88. Проблема: `set_bgra` silently clips in release.
+89. Улучшение: иметь checked writer для debug tools.
+90. Улучшение: оставить clipping для renderer resilience.
+91. Проблема: PPM debug output не хранит metadata.
+92. Улучшение: рядом писать `.json` sidecar.
+93. Улучшение: добавить timestamp в PPM sequence filename.
+94. Проблема: `write_ppm` не проверяется визуально.
+95. Улучшение: добавить tiny PPM golden test.
+96. Сделано: PPM writer использует buffering.
+97. Проблема: нет integration tests в `tests/`.
+98. Улучшение: вынести CLI smoke tests в integration suite.
+99. Улучшение: проверять `cargo run -- check` в CI.
+100. Улучшение: проверять `cargo run -- status` в CI.
+101. Проблема: CI не описан.
+102. Улучшение: добавить GitHub Actions для fmt/clippy/test.
+103. Улучшение: добавить macOS job для bundle smoke.
+104. Проблема: Linux CI не сможет проверить CoreMediaIO.
+105. Улучшение: `cfg(target_os = "macos")` держать узким.
+106. Сделано: extension binary имеет non-mac fallback.
+107. Проблема: docs раньше ссылались на `arhitecture.md`.
+108. Сделано: создан правильный `architecture.md`.
+109. Улучшение: удалить все ссылки на старое имя файла.
+110. Проблема: старый mixed-language layout directories ещё лежат в repo.
+111. Улучшение: проверить `App/`, `Extension/`, `Shared/` и удалить/архивировать лишнее.
+112. Проблема: `.DS_Store` присутствует в рабочем дереве.
+113. Улучшение: убедиться, что `.DS_Store` игнорируется.
+114. Проблема: `.idea` может быть user-local.
+115. Улучшение: решить, хранить ли IDE files в repo.
+116. Проблема: `target/` должен быть ignored.
+117. Сделано: generated build output не должен попадать в commit.
+118. Улучшение: добавить `signing/` в ignore, если там только generated files.
+119. Проблема: ручные signing artifacts могут случайно утечь.
+120. Улучшение: документировать env vars для signing.
+121. Проблема: `VirtualCameraConfig` UID продублирован в extension constants.
+122. Улучшение: вынести shared constants в library.
+123. Проблема: `EXTENSION_BUNDLE_ID` дублируется в коде.
+124. Улучшение: иметь single source of truth for bundle ids.
+125. Проблема: Info.plist создаётся string literal.
+126. Улучшение: template builder снизит риск typo.
+127. Улучшение: проверить plist через `plutil` в tests/scripts.
+128. Проблема: signing helper молча продолжает после failure.
+129. Улучшение: возвращать error для release signing failure.
+130. Улучшение: ad-hoc signing failure можно оставить warning.
+131. Проблема: `codesign` output не структурирован.
+132. Улучшение: печатать exact command context.
+133. Проблема: release/debug bundle mode раньше мог расходиться.
+134. Сделано: release bundle builds release extension.
+135. Улучшение: добавить test/assert на embedded binary path.
+136. Проблема: CLI args hand-written.
+137. Улучшение: добавить lightweight parser или оставить hand-written до роста.
+138. Проблема: help text не показывает signing env vars.
+139. Улучшение: добавить `bundle --help` later.
+140. Проблема: no version command.
+141. Улучшение: добавить `cargo run -- version`.
+142. Проблема: no diagnostics command.
+143. Улучшение: добавить `diagnose-extension`.
+144. Улучшение: diagnose should print app entitlements.
+145. Улучшение: diagnose should print extension entitlements.
+146. Улучшение: diagnose should print systemextensionsctl list.
+147. Улучшение: diagnose should detect missing provisioning profile.
+148. Проблема: current docs are correct but not executable.
+149. Улучшение: add checklist commands for release install.
+150. Улучшение: add troubleshooting for `No matching profile found`.
+151. Проблема: README earlier claimed remaining bridge work after bridge existed.
+152. Сделано: README rewritten to current truth.
+153. Проблема: old recommendations exceeded 500 numbered items.
+154. Сделано: recommendation list normalized to exactly 500 items.
+155. Улучшение: keep review findings non-numbered when request says 500.
+156. Проблема: docs can drift quickly.
+157. Улучшение: add doc checklist before release.
+158. Улучшение: mention actual test count after each major change.
+159. Проблема: no changelog.
+160. Улучшение: add `CHANGELOG.md` after first stable milestone.
+161. Проблема: no license visible.
+162. Улучшение: add license decision.
+163. Проблема: no contribution guide.
+164. Улучшение: add short dev workflow later.
+165. Проблема: no architecture diagram asset.
+166. Улучшение: keep text diagrams in markdown for now.
+167. Улучшение: add Mermaid diagram only when renderer supports it.
 
-## Итерация 2: ввод, вывод и platform backend
+## Iteration 2: App, Capture, Product Design
 
-101. Сделано: реальная камера подключена через Rust crate `nokhwa`.
-102. Сделано: выбран Rust-native strategy для camera capture.
-103. Сделано: macOS capture adapter идёт через AVFoundation backend nokhwa.
-104. Сделано: реализован `FrameSource` для real camera.
-105. Сделано: device discovery добавлен.
-106. Сделано: реализован `CameraDiscovery` для nokhwa.
-107. Проблема: permission handling всё ещё системный и зависит от macOS.
-108. Сделано: добавлен Rust app bundle с `NSCameraUsageDescription`.
-109. Проблема: camera permissions platform-specific.
-110. Улучшение: держать permissions вне renderer.
-111. Проблема: нет автоматического горячего подключения камер.
-112. Сделано: добавлен ручной device refresh в app.
-113. Проблема: нет camera IDs в pipeline.
-114. Улучшение: добавить source IDs.
-115. Проблема: нет camera names на frame metadata.
-116. Улучшение: добавить display name.
-117. Проблема: нет ordered selection.
-118. Улучшение: добавить `CameraSelection`.
-119. Проблема: нет reorder.
-120. Улучшение: добавить ordered vector with validation.
-121. Проблема: нет persistent config.
-122. Улучшение: добавить TOML config позже.
-123. Проблема: нет user profile.
-124. Улучшение: добавить saved layouts.
-125. Проблема: нет dynamic layout change.
-126. Улучшение: разрешить менять layout во время stream.
-127. Проблема: нет dynamic source add.
-128. Улучшение: добавить `PipelineEngine::update_sources`.
-129. Проблема: нет dynamic source remove.
-130. Улучшение: добавить graceful source removal.
-131. Проблема: нет reconnect policy.
-132. Улучшение: добавить retry with backoff.
-133. Проблема: нет stale frame detection.
-134. Улучшение: помечать старые кадры.
-135. Проблема: nil frame сейчас просто empty cell.
-136. Улучшение: добавить source placeholder.
-137. Проблема: placeholder без текста.
-138. Улучшение: добавить text rendering позже.
-139. Проблема: text rendering потребует font strategy.
-140. Улучшение: выбрать Rust text renderer.
-141. Проблема: нет mirroring.
-142. Улучшение: добавить mirror transform.
-143. Проблема: нет rotation.
-144. Улучшение: добавить rotate transform.
-145. Проблема: нет crop.
-146. Улучшение: добавить fit/fill/crop modes.
-147. Проблема: нет gutters.
-148. Улучшение: добавить configurable gutters.
-149. Проблема: нет borders.
-150. Улучшение: добавить border rendering.
-151. Проблема: нет labels.
-152. Улучшение: добавить source labels.
-153. Проблема: нет primary camera mode.
-154. Улучшение: добавить picture-in-picture.
-155. Проблема: нет smart layouts.
-156. Улучшение: добавить layouts for 5, 7, 8 sources.
-157. Проблема: нет output format switching.
-158. Улучшение: добавить 720p, 1080p, 4K presets.
-159. Проблема: нет fps switching.
-160. Улучшение: добавить 15, 30, 60 fps presets.
-161. Сделано: macOS CoreMediaIO backend теперь стартует из Rust extension.
-162. Сделано: создан Rust `.systemextension` bundle target.
-163. Проблема: CoreMediaIO provider всё ещё будет unsafe-heavy.
-164. Улучшение: изолировать unsafe CMIO provider в extension binary.
-165. Проблема: FFI может протекать в core.
-166. Улучшение: не экспортировать platform types из core.
-167. Проблема: sample buffer ownership сложен.
-168. Улучшение: написать wrapper с Drop.
-169. Проблема: queue ownership сложен.
-170. Улучшение: написать sink queue wrapper.
-171. Проблема: timestamps должны быть host-time compatible.
-172. Улучшение: добавить `Timestamp` abstraction.
-173. Проблема: backend errors будут OSStatus.
-174. Улучшение: конвертировать OSStatus в `CameraManError`.
-175. Сделано: system extension packaging добавлен.
-176. Сделано: backend proof-of-concept внутри extension добавлен.
-177. Сделано: pure Rust system extension использует Objective-C runtime bindings через `objc2`.
-178. Улучшение: исследовать `objc2` ecosystem.
-179. Проблема: release signing не должен быть в core.
-180. Улучшение: вынести packaging в scripts.
-181. Сделано: `UnsupportedVirtualCameraSink` убран из публичного API.
-182. Улучшение: пометить его как temporary.
-183. Сделано: есть `pipeline-demo` через `PipelineEngine`.
-184. Сделано: добавлен `PpmSequenceSink`.
-185. Проблема: `MemorySink` не потокобезопасен.
-186. Улучшение: добавить shared test sink при необходимости.
-187. Сделано: добавлены tests для pipeline ticks.
-188. Улучшение: добавить отдельные integration tests в `tests/`.
-189. Проблема: нет stress test.
-190. Улучшение: прогнать 1000 compose ticks.
-191. Проблема: нет memory profile.
-192. Улучшение: измерить allocations per frame.
-193. Проблема: каждый output allocates.
-194. Улучшение: добавить frame buffer reuse.
-195. Проблема: нет buffer pool.
-196. Улучшение: добавить Rust `FramePool`.
-197. Проблема: нет zero-copy path.
-198. Улучшение: изучить zero-copy only after correctness.
-199. Проблема: нет bounded queue.
-200. Улучшение: добавить channel strategy.
+168. Сделано: app built with `eframe`/`egui`.
+169. Сделано: app uses dense utility layout.
+170. Сделано: app avoids landing-page structure.
+171. Сделано: preview is first-class UI surface.
+172. Сделано: source controls live in left panel.
+173. Сделано: status bar reports live state.
+174. Сделано: synthetic mode uses checkboxes.
+175. Сделано: real mode now supports multiple checkboxes.
+176. Сделано: layout mode supports grid/row/column.
+177. Сделано: output toggle controls frame-spool sink.
+178. Сделано: install-extension button requests activation.
+179. Сделано: activation status is shown in the UI.
+180. Сделано: PPM export is available.
+181. Сделано: FPS presets and Auto mode exist.
+182. Сделано: active fps updates compositor and transport.
+183. Сделано: render cadence follows active fps.
+184. Сделано: virtual sink stores target fps in transport header.
+185. Сделано: extension can adapt cadence from transport fps.
+186. Проблема: install button is visible even when entitlement/profile is missing.
+187. Улучшение: preflight entitlement before enabling install button.
+188. Улучшение: show signing state in UI.
+189. Улучшение: show provisioning-profile state in UI.
+190. Улучшение: link status to troubleshooting docs.
+191. Проблема: app settings are not persisted.
+192. Улучшение: persist input mode.
+193. Улучшение: persist selected layout.
+194. Улучшение: persist fps mode.
+195. Улучшение: persist export path.
+196. Улучшение: persist virtual output toggle.
+197. Проблема: left panel width is fixed.
+198. Улучшение: use `egui::SidePanel` with resizable width.
+199. Проблема: output path is monospace text only.
+200. Улучшение: add reveal/copy action for spool path.
+201. Проблема: status event slot is single.
+202. Улучшение: separate sticky errors from transient confirmations.
+203. Проблема: switching Synthetic/Real stops stream silently.
+204. Улучшение: show explicit mode-switch event.
+205. Проблема: stale preview may remain after mode switch.
+206. Улучшение: clear preview or badge it as stale.
+207. Проблема: measured fps counts loop ticks.
+208. Улучшение: count successfully composed frames.
+209. Проблема: waiting-for-camera can still show previous frame.
+210. Улучшение: add waiting overlay.
+211. Проблема: no spinner during camera discovery.
+212. Улучшение: discover cameras in background.
+213. Проблема: refresh cameras can block UI.
+214. Улучшение: move refresh to worker.
+215. Проблема: first launch camera permission flow is not guided.
+216. Улучшение: detect permission denied and show recovery text.
+217. Проблема: capture errors are shown as raw backend strings.
+218. Улучшение: map common errors to user-action text.
+219. Сделано: capture errors have typed `CaptureErrorKind`.
+220. Улучшение: attach source name to per-source errors.
+221. Проблема: partial real-camera failure uses one status slot.
+222. Улучшение: show per-source health indicators.
+223. Проблема: source selection order is implicit.
+224. Улучшение: show composition order numbers.
+225. Проблема: no drag reorder.
+226. Улучшение: add reorder controls later.
+227. Проблема: no primary camera mode.
+228. Улучшение: add picture-in-picture layout.
+229. Улучшение: add one-large-many-small layout.
+230. Улучшение: add equal grid presets for 5/7/8 sources.
+231. Проблема: no labels on rendered cells.
+232. Улучшение: optional source labels overlay.
+233. Проблема: no crop/fit mode controls.
+234. Улучшение: add fit/fill/crop choice.
+235. Проблема: no per-source mute/disable while running.
+236. Улучшение: allow uncheck without stopping all sources.
+237. Сделано: unchecked real source is released.
+238. Проблема: Stop -> immediate Start can race camera release.
+239. Улучшение: add source shutdown acknowledgement.
+240. Улучшение: block reopen same id until old thread exits.
+241. Проблема: capture timeout helper can leave detached work.
+242. Улучшение: design cancellable capture open.
+243. Проблема: nokhwa cancellation hooks may be limited.
+244. Улучшение: document backend limitation clearly.
+245. Проблема: Continuity Camera behavior may differ from built-in camera.
+246. Улучшение: add device-specific diagnostics.
+247. Проблема: no camera format selection.
+248. Улучшение: expose resolution/fps choices later.
+249. Проблема: `SOURCE_WIDTH`/`SOURCE_HEIGHT` fixed for synthetic.
+250. Улучшение: allow synthetic test resolution presets.
+251. Проблема: app preview uploads full 1080p texture.
+252. Улучшение: measure texture upload cost.
+253. Улучшение: use lower preview texture while output remains 1080p if needed.
+254. Проблема: frame spool writes full 1080p per frame.
+255. Улучшение: move to shared memory or IOSurface.
+256. Проблема: file spool has no backpressure.
+257. Улучшение: include producer heartbeat and stale timeout.
+258. Сделано: transport includes sequence and timestamp.
+259. Сделано: transport version is explicit.
+260. Улучшение: add CRC or checksum for debug validation.
+261. Проблема: malformed spool currently becomes None.
+262. Улучшение: count malformed spool events.
+263. Проблема: file path default depends on OS temp dir.
+264. Улучшение: show resolved path in diagnostics.
+265. Проблема: no cleanup of stale spool file on exit.
+266. Улучшение: optionally remove spool on disconnect.
+267. Проблема: removing spool could blank extension unexpectedly.
+268. Улучшение: keep last frame unless explicit cleanup requested.
+269. Проблема: app has no visual automated tests.
+270. Улучшение: add screenshot smoke through app automation.
+271. Проблема: no mobile/narrow viewport because desktop app only.
+272. Улучшение: test minimum window size.
+273. Проблема: fixed text may overflow in narrow panel.
+274. Улучшение: audit all UI labels at min width.
+275. Проблема: buttons use text where icons may help.
+276. Улучшение: add icons if egui icon source is chosen.
+277. Проблема: color palette is serviceable but plain.
+278. Улучшение: refine contrast and semantic states.
+279. Проблема: warning and error colors may be close for colorblind users.
+280. Улучшение: add icons/shapes with color.
+281. Проблема: no dark/light theme switch.
+282. Улучшение: keep dark-only until product stabilizes.
+283. Проблема: no keyboard shortcuts list.
+284. Улучшение: show shortcuts via tooltips only.
+285. Сделано: Space toggles start/stop when keyboard is free.
+286. Проблема: Space may conflict with focused button behavior.
+287. Улучшение: audit egui focus handling.
+288. Проблема: no menu bar.
+289. Улучшение: add menu only when commands grow.
+290. Проблема: no crash reporting.
+291. Улучшение: log to file in app support directory.
+292. Проблема: no structured tracing.
+293. Улучшение: add `tracing` later if needed.
+294. Проблема: no user-facing diagnostics export.
+295. Улучшение: add "Copy diagnostics" button.
+296. Проблема: app cannot open docs from UI.
+297. Улучшение: add Help menu after signing flow is stable.
+298. Проблема: app does not distinguish launch bundle from cargo run.
+299. Улучшение: show "running from bundle" status.
+300. Проблема: install activation only works from installed app bundle.
+301. Улучшение: detect non-bundle launch and disable activation.
+302. Проблема: `/Applications` install is manual.
+303. Улучшение: add `cargo run -- install-app` later.
+304. Проблема: overwriting `/Applications/CameraMan.app` can be destructive.
+305. Улучшение: backup existing install before replace.
+306. Проблема: current UI does not show Team ID.
+307. Улучшение: show signing identity in diagnostics.
+308. Проблема: no provisioning profile parser.
+309. Улучшение: parse embedded profile to confirm entitlement.
+310. Проблема: Xcode-managed signing is outside current CLI.
+311. Улучшение: document manual signing path.
+312. Проблема: user can click Install repeatedly.
+313. Улучшение: disable while Requesting.
+314. Сделано: delegate/request are retained while installer lives.
+315. Проблема: repeated activation replaces active request.
+316. Улучшение: explicitly cancel or reject duplicate activation.
+317. Проблема: delegate queue is main dispatch queue.
+318. Улучшение: evaluate serial queue for CLI diagnose/install.
+319. Проблема: activation status is not persisted.
+320. Улучшение: query `systemextensionsctl list` for installed state.
+321. Проблема: `systemextensionsctl` output is not parsed.
+322. Улучшение: parse it for diagnostics only, not core logic.
+323. Проблема: no uninstall helper.
+324. Улучшение: document `systemextensionsctl uninstall`.
+325. Проблема: uninstall requires Team ID.
+326. Улучшение: print Team ID after signing.
+327. Проблема: real install cannot be fully automated without user approval.
+328. Улучшение: make that explicit in README and UI.
+329. Сделано: README now states provisioning requirement.
+330. Проблема: app still allows impossible activation in ad-hoc mode.
+331. Улучшение: code should prevent that path.
+332. Проблема: no smoke test for activation failure UI.
+333. Улучшение: add test seam around `ExtensionInstaller`.
+334. Проблема: egui app state is monolithic.
+335. Улучшение: split controls, preview, and status widgets.
+336. Проблема: splitting too early can obscure learning path.
+337. Улучшение: split after the current feature set stabilizes.
+338. Проблема: `CameraManApp` owns too many concerns.
+339. Улучшение: extract `RealSourceManager`.
+340. Улучшение: extract `VirtualOutputController`.
 
-## Итерация 3: Rust UI, дизайн и developer experience
+## Iteration 3: Extension, Packaging, Review, Release
 
-201. Сделано: GUI больше не отсутствует, добавлен Rust desktop app.
-202. Сделано: выбран Rust GUI stack `egui`/`eframe`.
-203. Сделано: `egui`/`eframe` подключен как зависимость.
-204. Решение: `iced` пока не нужен, чтобы не плодить UI-стеки.
-205. Решение: `tao` + custom renderer пока не нужен.
-206. Сделано: GUI не лезет в pixel internals напрямую.
-207. Сделано: GUI работает через core frame/layout/render APIs.
-208. Сделано: preview загружается в egui texture.
-209. Сделано: добавлен preview frame conversion boundary.
-210. Проблема: preview может перегружать CPU при росте разрешения.
-211. Сделано: preview repaint ограничен timer logic.
-212. Сделано: Start/Stop кнопка имеет стабильный размер.
-213. Сделано: основные кнопки имеют стабильные размеры.
-214. Проблема: настройки всё ещё могут перегрузить первый экран.
-215. Сделано: первый экран минимален: sources, layout, preview, status.
-216. Сделано: появилась понятная визуальная иерархия.
-217. Сделано: primary action только Start/Stop.
-218. Решение: Render выступает secondary action.
-219. Решение: Settings пока не добавлен, чтобы не раздувать UI.
-220. Улучшение: dangerous actions hidden or confirmed when they appear.
-221. Проблема: empty states пока базовые.
-222. Улучшение: добавить no cameras state для реального capture backend.
-223. Улучшение: добавить no permission state для реального capture backend.
-224. Улучшение: добавить backend missing state.
-225. Улучшение: добавить streaming state.
-226. Улучшение: добавить stopped state.
-227. Проблема: нет status bar.
-228. Улучшение: добавить fps.
-229. Улучшение: добавить dropped frames.
-230. Улучшение: добавить backend status.
-231. Улучшение: добавить selected source count.
-232. Проблема: нет diagnostics panel.
-233. Улучшение: добавить collapsible diagnostics.
-234. Проблема: нет copy diagnostics.
-235. Улучшение: добавить copy diagnostics action.
-236. Проблема: нет logs.
-237. Улучшение: добавить `tracing`.
-238. Проблема: нет log levels.
-239. Улучшение: добавить env-based log filter.
-240. Проблема: нет file logs.
-241. Улучшение: добавить optional file logging.
-242. Проблема: нет crash reports.
-243. Улучшение: добавить panic hook.
-244. Проблема: нет CLI help.
-245. Улучшение: добавить clap later.
-246. Проблема: нет stable commands.
-247. Улучшение: добавить `demo`, `check`, `list-devices`.
-248. Проблема: нет config file.
-249. Улучшение: добавить config after UI decisions.
-250. Проблема: нет docs for module boundaries.
-251. Улучшение: добавить rustdoc module docs.
-252. Проблема: публичные exports могут разрастись.
-253. Улучшение: экспортировать только stable API.
-254. Проблема: нет crate-level docs.
-255. Улучшение: добавить docs in `lib.rs`.
-256. Проблема: нет examples folder.
-257. Улучшение: добавить `examples/render_demo.rs`.
-258. Проблема: demo logic в main.
-259. Улучшение: вынести demo helper later.
-260. Проблема: нет lint policy.
-261. Улучшение: добавить clippy.
-262. Улучшение: запускать `cargo clippy -- -D warnings`.
-263. Проблема: нет formatting check.
-264. Улучшение: добавить `cargo fmt --check`.
-265. Проблема: нет CI.
-266. Улучшение: добавить GitHub Actions later.
-267. Проблема: нет MSRV.
-268. Улучшение: определить minimum Rust version.
-269. Проблема: edition 2024 может требовать свежий toolchain.
-270. Улучшение: указать toolchain в README.
-271. Проблема: нет rust-toolchain.toml.
-272. Улучшение: добавить pin only if needed.
-273. Проблема: нет license.
-274. Улучшение: добавить LICENSE.
-275. Проблема: нет changelog.
-276. Улучшение: добавить CHANGELOG before first release.
-277. Проблема: нет roadmap.
-278. Улучшение: держать roadmap in docs.
-279. Проблема: нет ADR.
-280. Улучшение: добавить ADR for Rust-only decision.
-281. Проблема: нет explicit non-goals.
-282. Улучшение: указать, что non-Rust source code не используется.
-283. Проблема: нет safety policy for unsafe.
-284. Улучшение: все unsafe только в platform modules.
-285. Проблема: нет review checklist.
-286. Улучшение: добавить checklist для unsafe PR.
-287. Проблема: нет performance budget.
-288. Улучшение: target 30 fps at 1080p.
-289. Проблема: нет latency budget.
-290. Улучшение: target below one frame of latency where possible.
-291. Проблема: нет memory budget.
-292. Улучшение: cap allocations per render tick.
-293. Проблема: нет error taxonomy.
-294. Улучшение: разделить config, capture, render, sink, platform errors.
-295. Проблема: нет recovery taxonomy.
-296. Улучшение: добавить user action per recoverable error.
-297. Проблема: нет test data.
-298. Улучшение: добавить synthetic fixtures.
-299. Проблема: нет visual fixtures.
-300. Улучшение: добавить generated PPM fixtures.
+341. Сделано: Rust CoreMediaIO provider source exists.
+342. Сделано: Rust CoreMediaIO device source exists.
+343. Сделано: Rust CoreMediaIO stream source exists.
+344. Сделано: stream declares 1920x1080 BGRA format.
+345. Сделано: stream sends `CMSampleBuffer` frames.
+346. Сделано: placeholder fallback keeps stream alive.
+347. Сделано: extension reads frame spool.
+348. Сделано: extension can scale incoming frame to output size.
+349. Сделано: extension uses host-time timestamps.
+350. Сделано: extension has a run loop.
+351. Сделано: video format description is cached.
+352. Сделано: creation failure is logged instead of hidden panic.
+353. Проблема: extension FFI code is unsafe-heavy.
+354. Улучшение: isolate more unsafe blocks behind small wrappers.
+355. Проблема: ObjC callback panics can cross runtime boundary.
+356. Улучшение: wrap callback bodies in `catch_unwind`.
+357. Проблема: stream handle stores raw pointer-like value.
+358. Улучшение: replace with retained object managed safely across thread.
+359. Проблема: client authorization is not enforced.
+360. Улучшение: verify client signing identity or bundle id if API allows.
+361. Сделано: client id logging exists.
+362. Проблема: client id is not security identity.
+363. Улучшение: document that logging is not authorization.
+364. Проблема: Core Foundation Create Rule is easy to violate.
+365. Улучшение: audit every `from_raw`.
+366. Проблема: extension error reporting is mostly `eprintln!`.
+367. Улучшение: add structured extension logging.
+368. Проблема: extension has no health endpoint.
+369. Улучшение: expose heartbeat through transport later.
+370. Проблема: frame spool reader reads whole file per frame.
+371. Улучшение: mmap or shared memory.
+372. Проблема: per-frame disk I/O can be hundreds of MB/s.
+373. Улучшение: use app-group shared container only as transition.
+374. Улучшение: use IOSurface/shared memory for production.
+375. Проблема: transport schema is custom.
+376. Улучшение: keep header tiny and versioned.
+377. Сделано: header has magic and version.
+378. Проблема: no backward compatibility for v1/v2 transport.
+379. Улучшение: parse old version for smoother dev upgrades.
+380. Проблема: extension silently falls back when transport invalid.
+381. Улучшение: rate-limit diagnostics for invalid transport.
+382. Проблема: fallback placeholder may hide app failure.
+383. Улучшение: encode "source is fallback" visually in placeholder.
+384. Проблема: virtual output can appear alive while app is dead.
+385. Улучшение: include stale-frame age in extension logic.
+386. Проблема: output fps and transport fps may drift.
+387. Сделано: transport now carries fps.
+388. Улучшение: extension should smooth fps changes.
+389. Проблема: clients may expect fixed stream format.
+390. Улучшение: keep format fixed, only cadence changes.
+391. Проблема: no integration test with real CoreMediaIO client.
+392. Улучшение: test with OBS/QuickTime/FaceTime after signing.
+393. Проблема: system extension is not listed without valid install.
+394. Улучшение: add release checklist for System Settings approval.
+395. Проблема: ad-hoc signing cannot install extension.
+396. Сделано: docs now state that clearly.
+397. Проблема: Apple Development cert without provisioning profile gets killed.
+398. Сделано: this was verified through AMFI `No matching profile found`.
+399. Сделано: bundler copies an embedded provisioning profile when provided.
+400. Сделано: bundler leaves restricted entitlement out when no profile is provided.
+401. Сделано: bundler no longer creates an unlaunchable entitlement-bearing app from identity alone.
+402. Сделано: added `CAMERAMAN_PROVISIONING_PROFILE` / `PROVISIONING_PROFILE` env support.
+403. Улучшение: verify profile contains bundle id.
+404. Улучшение: verify profile contains system-extension entitlement.
+405. Улучшение: verify Team ID matches signing identity.
+406. Проблема: extension entitlements may need more than sandbox for production.
+407. Улучшение: audit CMIO extension entitlement requirements.
+408. Проблема: Mach service name may need Team ID prefix in signed builds.
+409. Улучшение: generate mach service name from Team ID config.
+410. Проблема: app group is not configured.
+411. Улучшение: add app group only after provisioning exists.
+412. Проблема: release notarization not implemented.
+413. Улучшение: add notarization script after signing stabilizes.
+414. Проблема: no hardened runtime config.
+415. Улучшение: add hardened runtime for release.
+416. Проблема: no versioned release artifact naming.
+417. Улучшение: output `CameraMan-<version>.zip` later.
+418. Проблема: no app icon.
+419. Улучшение: add `.icns` before user-facing release.
+420. Проблема: Info.plist lacks document/help metadata.
+421. Улучшение: keep plist minimal until release.
+422. Проблема: `NSCameraUsageDescription` may be too technical.
+423. Улучшение: rewrite permission string in user language.
+424. Проблема: app category is generic video.
+425. Улучшение: revisit category for distribution.
+426. Проблема: no localization.
+427. Улучшение: keep English-only until workflows stabilize.
+428. Проблема: no Russian UI despite Russian project conversation.
+429. Улучшение: consider localization after core is stable.
+430. Проблема: no install guide screenshots.
+431. Улучшение: add screenshots after real signing works.
+432. Проблема: no code review checklist in repo.
+433. Улучшение: add review checklist to architecture.
+434. Проблема: current docs are long.
+435. Улучшение: keep README short and architecture detailed.
+436. Сделано: README is now short.
+437. Сделано: architecture now holds deeper decomposition.
+438. Сделано: recommendations hold exactly 500 items.
+439. Проблема: old `arhitecture.md` typo could confuse users.
+440. Сделано: canonical file renamed to `architecture.md`.
+441. Проблема: deleting old file can break external links.
+442. Улучшение: mention rename in commit message.
+443. Проблема: untracked `src/system_extension.rs` was easy to miss.
+444. Улучшение: stage new files explicitly before commit.
+445. Проблема: `git diff --stat` hides untracked files.
+446. Улучшение: always run `git status --short` before final.
+447. Проблема: dirty main branch increases merge risk.
+448. Улучшение: use feature branch for future large tasks.
+449. Проблема: user requested merge/push from main.
+450. Улучшение: commit on main only after tests pass.
+451. Проблема: pushing main directly is risky.
+452. Улучшение: future work should open PR.
+453. Проблема: no branch protection knowledge available.
+454. Улучшение: inspect GitHub settings before release workflow.
+455. Проблема: no remote changes were pulled this run.
+456. Сделано: `git fetch origin` confirmed main equals origin/main.
+457. Проблема: old docs said one-camera real mode.
+458. Сделано: README now says multi-camera real mode.
+459. Проблема: old docs said frame bridge remained future work.
+460. Сделано: README now says frame bridge exists.
+461. Проблема: recommendation backlog mixed done/open states beyond 500.
+462. Сделано: backlog normalized and reviewed.
+463. Проблема: tests do not cover app UI.
+464. Улучшение: add UI state unit tests where possible.
+465. Проблема: extension binary tests are zero.
+466. Улучшение: move pure extension helpers into testable module.
+467. Проблема: direct CoreMediaIO tests need macOS and signing.
+468. Улучшение: gate integration tests behind env var.
+469. Проблема: `capture-demo` assumes camera id `0`.
+470. Улучшение: allow camera id argument.
+471. Проблема: `list-cameras` output lacks JSON mode.
+472. Улучшение: add `--json` for tooling.
+473. Проблема: CLI output and README can drift.
+474. Улучшение: generate command docs from constants later.
+475. Проблема: no panic policy documented.
+476. Улучшение: document no panic across FFI boundaries.
+477. Проблема: no unsafe audit comments for every block.
+478. Улучшение: add focused safety comments in extension code.
+479. Проблема: too many manual Objective-C method signatures.
+480. Улучшение: wrap each protocol implementation in smaller module.
+481. Проблема: app and extension share transport through filesystem only.
+482. Улучшение: abstract transport trait for future shared memory.
+483. Проблема: extension cannot tell user-facing app status.
+484. Улучшение: add reverse status channel later.
+485. Проблема: no source-level latency display.
+486. Улучшение: show per-source freshness.
+487. Проблема: app cannot save/restore camera choices robustly.
+488. Улучшение: persist by stable device id and name fallback.
+489. Проблема: no handling for camera unplug mid-stream beyond source error.
+490. Улучшение: show unplugged source tile.
+491. Проблема: no release smoke script.
+492. Улучшение: add script for fmt/clippy/test/bundle/codesign.
+493. Проблема: no final visual verification in this run yet.
+494. Улучшение: run app screenshot check before release.
+495. Проблема: no generated architecture diagram.
+496. Улучшение: add Mermaid diagram if docs renderer supports it.
+497. Проблема: no owner notes for risky files.
+498. Улучшение: add comments in architecture for `extension_main.rs`.
+499. Проблема: production virtual camera is blocked by signing/provisioning.
+500. Следующий шаг: validate provisioning profile contents and disable impossible install states.
 
-## Итерация 4: качество, производительность и релиз
+## Review Summary
 
-301. Проблема: CPU compositor может быть медленным.
-302. Улучшение: сначала измерить, потом оптимизировать.
-303. Проблема: SIMD premature может усложнить код.
-304. Улучшение: держать scalar reference implementation.
-305. Проблема: GPU path может понадобиться.
-306. Улучшение: добавить GPU only after Rust core stable.
-307. Проблема: нет color management.
-308. Улучшение: явно документировать BGRA/sRGB assumptions.
-309. Проблема: alpha пока всегда 255.
-310. Улучшение: определить alpha policy.
-311. Проблема: no premultiplied alpha policy.
-312. Улучшение: зафиксировать non-premultiplied or premultiplied.
-313. Проблема: нет stride abstraction.
-314. Улучшение: добавить stride when backend requires it.
-315. Проблема: current frame assumes packed pixels.
-316. Улучшение: keep packed core, convert at boundaries.
-317. Проблема: нет planar pixel formats.
-318. Улучшение: не добавлять planar formats до необходимости.
-319. Проблема: YUV может понадобиться для backend.
-320. Улучшение: добавить converter later.
-321. Проблема: no timestamp monotonicity test.
-322. Улучшение: добавить timestamp tests with fake clock.
-323. Проблема: no fake clock.
-324. Улучшение: добавить `Clock` trait if needed.
-325. Проблема: no render scheduler.
-326. Улучшение: добавить scheduler independent from UI.
-327. Проблема: no cancellation token.
-328. Улучшение: добавить shutdown signal.
-329. Проблема: no worker thread ownership model.
-330. Улучшение: document thread ownership.
-331. Проблема: no Send/Sync audit.
-332. Улучшение: проверить trait bounds for threaded pipeline.
-333. Проблема: trait objects may hide Send requirement.
-334. Улучшение: require `FrameSource: Send` once threaded.
-335. Проблема: sink may need Send.
-336. Улучшение: require `VirtualCameraSink: Send` once threaded.
-337. Проблема: Frame clone can be expensive.
-338. Улучшение: introduce Arc-backed buffers if needed.
-339. Проблема: MemorySink clones whole frames.
-340. Улучшение: acceptable only for tests.
-341. Проблема: no allocation stats.
-342. Улучшение: add benchmark with allocation counters later.
-343. Проблема: no binary size awareness.
-344. Улучшение: measure after GUI/backend dependencies.
-345. Проблема: no dependency policy.
-346. Улучшение: prefer small, maintained crates.
-347. Проблема: no security audit.
-348. Улучшение: run cargo audit later.
-349. Проблема: no supply-chain policy.
-350. Улучшение: pin release dependencies.
-351. Проблема: no macOS packaging.
-352. Улучшение: decide app bundle strategy for Rust GUI.
-353. Проблема: no signing docs.
-354. Улучшение: document Developer ID flow.
-355. Проблема: no notarization docs.
-356. Улучшение: add notarization only when app bundle exists.
-357. Проблема: no uninstall docs.
-358. Улучшение: document virtual camera cleanup.
-359. Проблема: no compatibility matrix.
-360. Улучшение: track macOS versions.
-361. Проблема: no Apple Silicon/Intel policy.
-362. Улучшение: decide universal binary support.
-363. Проблема: no CI macOS runner.
-364. Улучшение: add macOS CI for pure core.
-365. Проблема: virtual camera CI hard.
-366. Улучшение: keep backend tests separated.
-367. Проблема: no manual QA checklist.
-368. Улучшение: add checklist for real device testing.
-369. Проблема: no OBS test plan.
-370. Улучшение: include OBS in manual QA.
-371. Проблема: no browser test plan.
-372. Улучшение: include browser camera picker in QA.
-373. Проблема: no Zoom test plan.
-374. Улучшение: include Zoom only if available.
-375. Проблема: no permission reset guide.
-376. Улучшение: document macOS privacy reset when needed.
-377. Проблема: no backend crash isolation.
-378. Улучшение: isolate platform backend errors.
-379. Проблема: no UI/backend separation doc.
-380. Улучшение: keep architecture doc updated.
-381. Проблема: recommendation file can become stale.
-382. Улучшение: refresh after each major iteration.
-383. Проблема: README can promise too much.
-384. Улучшение: keep current status honest.
-385. Проблема: demo output is PPM.
-386. Улучшение: later support PNG via dependency.
-387. Проблема: no image dependency yet.
-388. Улучшение: add one only when needed.
-389. Проблема: no audio support.
-390. Улучшение: explicitly keep project video-only for now.
-391. Проблема: no multi-output support.
-392. Улучшение: one virtual camera first.
-393. Проблема: no multiple profile support.
-394. Улучшение: postpone profiles.
-395. Проблема: no plugin system.
-396. Улучшение: do not add plugins yet.
-397. Проблема: no remote streaming.
-398. Улучшение: keep local-only.
-399. Проблема: no privacy statement.
-400. Улучшение: document that frames stay local.
-
-## Итерация 5: порядок маленьких PR
-
-401. PR 1: keep Rust-only cleanup.
-402. PR 2: add more compositor tests.
-403. PR 3: add pipeline integration test.
-404. PR 4: add `FrameMetadata`.
-405. PR 5: add `CapturedFrame`.
-406. PR 6: add metrics.
-407. PR 7: add render loop.
-408. PR 8: add frame pool.
-409. PR 9: add CLI subcommands.
-410. PR 10: add clippy config.
-411. PR 11: add rustdoc.
-412. PR 12: add examples.
-413. PR 13: add camera discovery trait refinement.
-414. PR 14: done, research macOS capture backend.
-415. PR 15: done, prototype camera capture.
-416. PR 16: done, add real camera list command.
-417. PR 17: done, add real camera frame capture with timeout.
-418. PR 18: done, add preview file output from real camera path.
-419. PR 19: done, research virtual camera backend.
-420. PR 20: started, isolate unsafe backend wrappers.
-421. PR 21: prototype CoreMediaIO device discovery in Rust.
-422. PR 22: prototype sink connection in Rust.
-423. PR 23: send one synthetic frame to virtual sink.
-424. PR 24: send render loop frames to virtual sink.
-425. PR 25: add backend diagnostics.
-426. PR 26: add backend error mapping.
-427. PR 27: add manual QA docs.
-428. PR 28: done, choose `egui`/`eframe`.
-429. PR 29: done, create basic GUI shell.
-430. PR 30: done, show synthetic source list.
-431. PR 31: done, show preview.
-432. PR 32: done, add layout controls.
-433. PR 33: done, add start/stop controls.
-434. PR 34: done, add status bar.
-435. PR 35: add settings after real backend exists.
-436. PR 36: add persistence.
-437. PR 37: add packaging.
-438. PR 38: add signing docs.
-439. PR 39: add release checklist.
-440. PR 40: prepare alpha.
-441. Правило: один PR должен менять одну архитектурную идею.
-442. Правило: renderer PR должен иметь visual or pixel tests.
-443. Правило: backend PR должен иметь safety notes.
-444. Правило: UI PR должен иметь screenshot or demo note.
-445. Правило: docs PR должен remove stale promises.
-446. Правило: no platform code inside renderer.
-447. Правило: no UI code inside backend.
-448. Правило: no unsafe outside backend modules.
-449. Правило: no global mutable state.
-450. Правило: no hidden blocking on UI thread.
-451. Правило: prefer explicit config.
-452. Правило: prefer small structs.
-453. Правило: prefer typed errors.
-454. Правило: prefer testable pure functions.
-455. Правило: prefer traits at platform boundaries.
-456. Правило: avoid abstraction before second implementation.
-457. Правило: benchmark before optimization.
-458. Правило: document every unsafe block.
-459. Правило: keep CLI useful for debugging.
-460. Правило: keep GUI thin now that core works.
-461. Правило: keep README honest.
-462. Правило: keep architecture doc short enough to read.
-463. Правило: keep recommendation list as backlog, not law.
-464. Правило: remove dead code quickly.
-465. Правило: do not reintroduce non-Rust source files.
-466. Правило: generated assets are okay if documented.
-467. Правило: platform metadata files are okay only for packaging.
-468. Правило: Rust code remains source of behavior.
-469. Правило: docs should say what is implemented now.
-470. Правило: docs should separate plan from reality.
-471. Учиться: start with `src/frame.rs`.
-472. Учиться: then read `src/layout.rs`.
-473. Учиться: then read `src/render.rs`.
-474. Учиться: then read `src/camera.rs`.
-475. Учиться: then read `src/virtual_camera.rs`.
-476. Учиться: then read `src/pipeline.rs`.
-477. Учиться: then read `src/main.rs`.
-478. Учиться: run `cargo test`.
-479. Учиться: run `cargo run`.
-480. Учиться: run `cargo run -- demo`.
-481. Учиться: inspect `target/camera-man-demo.ppm`.
-482. Учиться: change synthetic colors.
-483. Учиться: change layout.
-484. Учиться: add a fourth synthetic source.
-485. Учиться: add a compositor test.
-486. Учиться: add a pipeline test.
-487. Учиться: add a new layout.
-488. Учиться: add a simple border.
-489. Учиться: add metrics.
-490. Учиться: add CLI arg parsing.
-491. Следующий шаг: add external integration test in `tests/`.
-492. Следующий шаг: add app-level integration checks.
-493. Следующий шаг: add real render loop backend.
-494. Следующий шаг: test bundled app camera permission flow.
-495. Сделано: bridge composed frames into active Rust CoreMediaIO provider через frame spool.
-496. Следующий шаг: replace synthetic app sources with Rust capture.
-497. Следующий шаг: keep tests green.
-498. Следующий шаг: keep docs synced.
-499. Следующий шаг: make small commits.
-500. Следующий шаг: harden frame transport with app-group IPC and release entitlements.
-
-## Итерация 6: раунд ревью (найти -> исправить -> проверить, x3), статус на текущий снэпшот
-
-Пункты 1-500 выше - это живой бэклог, который вели несколько параллельных сессий; часть
-пунктов была помечена "Сделано" до того, как код это подтверждал. Этот раздел - результат
-отдельного трёхпроходного ревью (find bugs -> fix -> adversarially verify) над ядром,
-capture-слоем и (частично, только чтением) новым CMIO-расширением. Полное описание
-исправленных багов - в `arhitecture.md`, раздел "8a. Verification Round". Здесь - то, что
-ревью нашло и что из этого осталось открытым.
-
-Исправлено за три прохода (подробности в arhitecture.md 8a):
-
-501. Сделано: паника от zero-width/zero-height ячеек при количестве источников больше
-     ширины/высоты вывода (`layout.rs::cells`, `render.rs::paste_aspect_fit`).
-502. Сделано: переполнение `u32` в nearest-neighbor сэмплинге для кадров с экстремальным
-     аспектом (`render.rs::sample_coordinate`, теперь `u64`).
-503. Сделано: `byte_len` в `u32` мог откатиться (wrap) в 0 для патологических width x height
-     и пропустить кадр с пустым буфером; теперь `u64` + `MAX_FRAME_BYTES`.
-504. Сделано: `write_ppm` писал по 3 байта без буферизации; обёрнут в `BufWriter`.
-505. Сделано: один упавший `FrameSource` убивал весь тик `PipelineEngine::render_once`;
-     теперь деградирует до пустой ячейки и репортит `source_errors`.
-506. Сделано: `PipelineEngine::start()` не был идемпотентен, `render_once()` до `start()`
-     тихо трогал неподключенный sink; оба случая теперь явные.
-507. Сделано: `CameraManError::Capture`/`Io` были голыми `String`; теперь типизированная
-     `CaptureErrorKind` и `std::io::ErrorKind`.
-508. Сделано: `ThreadedNokhwaFrameSource` не хранил `JoinHandle` (поток навсегда утекал) и
-     паника внутри цикла захвата убивала поток без сигнала (превью выглядело живым, но
-     кадр был заморожен); добавлены reaper-поток для неблокирующего join в `Drop` и
-     `catch_unwind` вокруг тела цикла.
-509. Сделано: адверсарial-проверка нашла реальную коллизию в `CaptureErrorKind::classify`
-     (широкое слово "already" перекрывало "not found"); ключевые слова уточнены, добавлен
-     регрессионный тест.
-
-Найдено адверсарial-проверкой и сознательно оставлено открытым:
-
-510. Открыто: `capture_one_with_timeout` при таймауте оставляет поток отсоединённым,
-     камера может остаться занятой дольше таймаута - задокументировано как ограничение,
-     не исправлено (nokhwa не даёт хука отмены).
-511. Открыто: гонка "Stop -> быстрый Start на той же камере": `Drop` у
-     `ThreadedNokhwaFrameSource` не гарантирует, что камера уже освобождена к моменту,
-     когда `app.rs` открывает новый источник для того же id. Заведена отдельная задача
-     (`task_188f46e0`), не исправлено здесь намеренно, так как `app.rs` в момент ревью
-     менялся параллельной сессией.
-512. Открыто: `CaptureErrorKind::classify` - эвристика по приоритету ключевых слов, а не
-     разбор структурированной ошибки; сообщение, правдоподобно описывающее два состояния
-     сразу, разрешается по приоритету, а не корректно. Это осознанно задокументированное
-     ограничение, а не баг с понятным фиксом.
-
-Небезопасный/FFI-код `src/extension_main.rs` (только чтение, не редактировался, так как
-файл активно писался параллельно; полный список - в arhitecture.md 8a):
-
-513. Критично: `create_extension().expect(...)` паникует и убивает весь host-процесс
-     расширения при ошибке `addStream_error`/`addDevice_error`.
-514. Критично: `connectClient:error:` и `authorizedToStartStreamForClient:` всегда
-     возвращают `true` - подключиться может любой локальный процесс.
-515. Критично: указатель на стрим хранится как голый `usize` (`StreamHandle`) и
-     ре-ретейнится по адресу из другого потока вместо `Retained<CMIOExtensionStream>` в
-     `Arc`/`Mutex`.
-516. Проблема: `formats()` и путь создания сэмпл-буфера пересоздают
-     `CMVideoFormatDescription`/`CMIOExtensionStreamFormat` на каждый вызов вместо
-     кэширования одного значения - нарушает контракт "formats не меняются" и рискует
-     утечкой ссылки по Core Foundation Create Rule.
-517. Проблема: нет `catch_unwind` вокруg тел методов `define_class!`; паника Rust может
-     пересечь границу Objective-C runtime и увести в abort весь host-процесс.
-518. Проблема: `keep_alive` - `sleep(60s)`-цикл вместо настоящего run loop
-     (`CFRunLoopRun` или эквивалент).
-519. Улучшение: `video_format_description()` пересоздаётся на каждый кадр внутри
-     `create_sample_buffer` (30 раз/сек) вместо переиспользования одного значения.
-520. Вывод: расширение - честный первый рабочий прототип, но не готово к чему-либо за
-     пределами локальной разработки, пока пункты 513-517 не закрыты.
-
-Ещё открытые пункты из UI-ревью `app.rs` (сам файл не редактировался в рамках этого
-раунда, см. `task_188f46e0` и дальнейшие раунды):
-
-521. Открыто: переключение Synthetic/Real молча останавливает работающий стрим без
-     объяснения в статус-баре.
-522. Открыто: после переключения в Real режим старый synthetic-кадр может показываться
-     под бейджем REAL до первого реального кадра.
-523. Открыто: `measured_fps` считает тики цикла рендера, а не реально отрисованные кадры -
-     показывает ненулевой fps в состоянии "Waiting for camera".
-524. Открыто: смена выбранной камеры не сбрасывает `capture_error_streak`, первая ошибка
-     новой камеры может быть подавлена.
-525. Открыто: левая панель - фиксированная колонка на ручной раскладке, а не
-     `egui::SidePanel` (нет resize).
-526. Открыто: нет персистентности (позиция окна, выбранный layout/источники/путь экспорта
-     не сохраняются между запусками; `eframe` персистентность не подключена).
-527. Открыто: `Refresh cameras` и обнаружение при старте блокируют UI-поток без спиннера.
-528. Открыто: глобальный хоткей Space может задваивать срабатывание с фокусной кнопкой
-     (не проверено полностью, но правдоподобно по API egui 0.35).
-529. Открыто: LIVE/PAUSED-бейдж на превью не исчезает и перекрывает контент, слот
-     `StatusEvent` один, поэтому "тихий" статус может затирать липкую ошибку.
-
-Итог по разделу: 3 прохода, суммарно на порядок больше находок, чем помещается в этот файл
-(включая давнюю Swift-эру проекта, ещё до перехода на чистый Rust), из них выше перечислены
-только те, что либо исправлены в этом раунде, либо остаются открытыми и не задублированы с
-пунктами 1-500. Отдельный построчный аудит пунктов 1-500 против кода на момент раунда дал:
-для диапазона 1-250 - done 89, partial 35, open 125, obsolete 1 (из 250); для диапазона
-251-500 - done 70, partial 37, open 143, obsolete 0 (из 250). Полные построчные таблицы
-аудита (какой именно код подтверждает или опровергает каждый пункт) сохранены вне
-репозитория в рамках этой сессии ревью; в сам файл перенесены только точечные исправления
-(см. правки 89-96 выше), чтобы не раздувать документ до нечитаемого размера.
+The active code review after this rewrite should focus on signing/provisioning, stale documentation, app UI state, and unsafe extension boundaries. Keep the numbered backlog above at exactly 500 items; add future detailed review notes here without extra numbered entries.

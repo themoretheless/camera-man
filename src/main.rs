@@ -172,34 +172,53 @@ fn bundle_app() -> Result<(), Box<dyn std::error::Error>> {
 
     sign_path(&app_exe);
 
-    // com.apple.developer.system-extension.install is a *restricted*
-    // entitlement: AMFI kills the whole process at launch (SIGKILL, no
-    // output at all) if it is present on an ad-hoc signature without a
-    // matching provisioning profile. Nothing in this codebase currently
-    // calls the SystemExtensions activation API, so the entitlement buys
-    // nothing today; only embed it once a real Developer ID identity is
-    // supplied via CODESIGN_IDENTITY, so `cargo run -- bundle` stays
-    // launchable for local development out of the box.
+    // com.apple.developer.system-extension.install is a restricted entitlement.
+    // AMFI kills the whole process at launch when the entitlement is present
+    // without a matching provisioning profile. Therefore a plain
+    // CODESIGN_IDENTITY is not enough: only embed the entitlement when the
+    // caller also provides CAMERAMAN_PROVISIONING_PROFILE / PROVISIONING_PROFILE.
     if signing_identity() == AD_HOC_IDENTITY {
         sign_path(&bundle);
         eprintln!(
             "note: signed ad-hoc (no CODESIGN_IDENTITY set), so the restricted \
              system-extension.install entitlement was left out; the app will launch, \
-             but system-extension activation needs a real Apple Developer ID identity."
+             but system-extension activation needs real signing and provisioning."
         );
-    } else {
-        let app_entitlements = PathBuf::from("target/signing/CameraMan.entitlements");
-        if let Some(parent) = app_entitlements.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut entitlements = fs::File::create(&app_entitlements)?;
-        entitlements.write_all(APP_ENTITLEMENTS.as_bytes())?;
+    } else if let Some(profile) = provisioning_profile() {
+        fs::copy(&profile, contents.join("embedded.provisionprofile"))?;
+        eprintln!("Embedded provisioning profile: {}", profile.display());
+
+        let app_entitlements = write_app_entitlements()?;
         sign_path_with_entitlements(&bundle, &app_entitlements);
+    } else {
+        sign_path(&bundle);
+        eprintln!(
+            "note: CODESIGN_IDENTITY is set, but no CAMERAMAN_PROVISIONING_PROFILE \
+             or PROVISIONING_PROFILE was provided. The app was signed without \
+             system-extension.install so macOS will not kill it at launch, but \
+             extension activation will fail until a matching profile is embedded."
+        );
     }
 
     println!("Created {}", bundle.display());
     println!("Launch with: open {}", bundle.display());
     Ok(())
+}
+
+fn provisioning_profile() -> Option<PathBuf> {
+    env::var_os("CAMERAMAN_PROVISIONING_PROFILE")
+        .or_else(|| env::var_os("PROVISIONING_PROFILE"))
+        .map(PathBuf::from)
+}
+
+fn write_app_entitlements() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let app_entitlements = PathBuf::from("target/signing/CameraMan.entitlements");
+    if let Some(parent) = app_entitlements.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut entitlements = fs::File::create(&app_entitlements)?;
+    entitlements.write_all(APP_ENTITLEMENTS.as_bytes())?;
+    Ok(app_entitlements)
 }
 
 fn bundle_extension() -> Result<(), Box<dyn std::error::Error>> {
@@ -218,10 +237,20 @@ fn copy_extension_into_app(contents: &std::path::Path) -> Result<(), Box<dyn std
     Ok(())
 }
 
+/// True when the currently running `camera-man` binary was itself built in
+/// release mode (baked in at compile time). Used so `cargo run --release --
+/// bundle` does not silently embed a debug (unoptimized, ~10x slower per the
+/// fps investigation) `cameraman-extension` inside an otherwise-release app.
+fn is_release_build() -> bool {
+    !cfg!(debug_assertions)
+}
+
 fn build_extension_binary() -> Result<(), Box<dyn std::error::Error>> {
-    let status = Command::new("cargo")
-        .args(["build", "--bin", "cameraman-extension"])
-        .status()?;
+    let mut args = vec!["build", "--bin", "cameraman-extension"];
+    if is_release_build() {
+        args.push("--release");
+    }
+    let status = Command::new("cargo").args(args).status()?;
     if !status.success() {
         return Err("failed to build cameraman-extension".into());
     }
@@ -234,8 +263,13 @@ fn assemble_extension_bundle(bundle: &std::path::Path) -> Result<(), Box<dyn std
     fs::remove_dir_all(bundle).ok();
     fs::create_dir_all(&macos)?;
 
+    let extension_profile_dir = if is_release_build() {
+        "release"
+    } else {
+        "debug"
+    };
     fs::copy(
-        "target/debug/cameraman-extension",
+        format!("target/{extension_profile_dir}/cameraman-extension"),
         macos.join("CameraManExtension"),
     )?;
 

@@ -8,9 +8,11 @@ use crate::frame::{Frame, PixelFormat};
 use crate::virtual_camera::VirtualCameraSink;
 
 const MAGIC: &[u8; 4] = b"CMAN";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const PIXEL_FORMAT_BGRA8: u32 = 1;
-const HEADER_LEN: usize = 52;
+const HEADER_LEN: usize = 56;
+/// Used when a producer never called `set_target_fps`; keeps old behavior.
+const DEFAULT_FPS: u32 = 30;
 
 pub fn default_frame_spool_path() -> PathBuf {
     std::env::var_os("CAMERAMAN_FRAME_SPOOL")
@@ -23,6 +25,10 @@ pub struct TransportFrame {
     pub frame: Frame,
     pub sequence: u64,
     pub timestamp_nanos: u128,
+    /// The producer's target frame rate at the time this frame was written.
+    /// Lets the extension adapt its own cadence instead of assuming a fixed
+    /// constant that may not match what the app is actually producing.
+    pub fps: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +36,7 @@ pub struct FrameSpoolSink {
     path: PathBuf,
     connected: bool,
     sequence: u64,
+    target_fps: u32,
 }
 
 impl Default for FrameSpoolSink {
@@ -44,6 +51,7 @@ impl FrameSpoolSink {
             path: path.into(),
             connected: false,
             sequence: 0,
+            target_fps: DEFAULT_FPS,
         }
     }
 
@@ -53,6 +61,18 @@ impl FrameSpoolSink {
 
     pub const fn sequence(&self) -> u64 {
         self.sequence
+    }
+
+    /// Advertises the rate this sink is being fed at, so a reader (the CMIO
+    /// extension) can match its own cadence instead of assuming a constant.
+    /// Takes effect on the next `send`; safe to call at any time, including
+    /// while connected.
+    pub fn set_target_fps(&mut self, fps: u32) {
+        self.target_fps = fps.max(1);
+    }
+
+    pub const fn target_fps(&self) -> u32 {
+        self.target_fps
     }
 }
 
@@ -75,7 +95,7 @@ impl VirtualCameraSink for FrameSpoolSink {
                 "frame spool sink is not connected",
             ));
         }
-        write_frame(&self.path, self.sequence, frame)?;
+        write_frame(&self.path, self.sequence, self.target_fps, frame)?;
         self.sequence = self.sequence.wrapping_add(1);
         Ok(())
     }
@@ -98,7 +118,7 @@ pub fn read_latest_frame(path: impl AsRef<Path>) -> Result<Option<TransportFrame
     parse_frame(&bytes)
 }
 
-fn write_frame(path: &Path, sequence: u64, frame: &Frame) -> Result<(), CameraManError> {
+fn write_frame(path: &Path, sequence: u64, fps: u32, frame: &Frame) -> Result<(), CameraManError> {
     if frame.pixel_format() != PixelFormat::Bgra8 {
         return Err(CameraManError::UnsupportedPixelFormat);
     }
@@ -110,6 +130,7 @@ fn write_frame(path: &Path, sequence: u64, frame: &Frame) -> Result<(), CameraMa
     write_u32(&mut file, frame.width())?;
     write_u32(&mut file, frame.height())?;
     write_u32(&mut file, PIXEL_FORMAT_BGRA8)?;
+    write_u32(&mut file, fps)?;
     write_u64(&mut file, sequence)?;
     write_u128(&mut file, now_nanos())?;
     write_u64(&mut file, frame.data().len() as u64)?;
@@ -129,9 +150,10 @@ fn parse_frame(bytes: &[u8]) -> Result<Option<TransportFrame>, CameraManError> {
     let width = read_u32(bytes, 8)?;
     let height = read_u32(bytes, 12)?;
     let pixel_format = read_u32(bytes, 16)?;
-    let sequence = read_u64(bytes, 20)?;
-    let timestamp_nanos = read_u128(bytes, 28)?;
-    let data_len = read_u64(bytes, 44)? as usize;
+    let fps = read_u32(bytes, 20)?;
+    let sequence = read_u64(bytes, 24)?;
+    let timestamp_nanos = read_u128(bytes, 32)?;
+    let data_len = read_u64(bytes, 48)? as usize;
 
     if version != VERSION || pixel_format != PIXEL_FORMAT_BGRA8 {
         return Ok(None);
@@ -150,6 +172,7 @@ fn parse_frame(bytes: &[u8]) -> Result<Option<TransportFrame>, CameraManError> {
         frame,
         sequence,
         timestamp_nanos,
+        fps: fps.max(1),
     }))
 }
 
@@ -249,7 +272,36 @@ mod tests {
         let transported = read_latest_frame(&path).unwrap().unwrap();
         assert_eq!(transported.sequence, 0);
         assert_eq!(transported.frame, frame);
+        assert_eq!(transported.fps, DEFAULT_FPS);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn target_fps_is_carried_through_the_spool() {
+        let path = std::env::temp_dir().join(format!(
+            "cameraman-fps-{}-{}.bgra",
+            std::process::id(),
+            now_nanos()
+        ));
+        let frame = Frame::solid_bgra(1, 1, [1, 2, 3, 255]).unwrap();
+        let mut sink = FrameSpoolSink::new(&path);
+        sink.set_target_fps(60);
+        assert_eq!(sink.target_fps(), 60);
+
+        sink.connect().unwrap();
+        sink.send(&frame).unwrap();
+
+        let transported = read_latest_frame(&path).unwrap().unwrap();
+        assert_eq!(transported.fps, 60);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn zero_fps_is_clamped_to_one() {
+        let mut sink = FrameSpoolSink::new("/tmp/unused-in-this-test.bgra");
+        sink.set_target_fps(0);
+        assert_eq!(sink.target_fps(), 1);
     }
 }

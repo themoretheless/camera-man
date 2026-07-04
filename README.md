@@ -1,206 +1,217 @@
 # CameraMan
 
-CameraMan is now a Rust-only project.
+CameraMan is a Rust-only macOS camera compositor. It reads selected camera
+sources, composes them into one BGRA frame, previews that frame in a desktop
+app, and publishes the latest composed output to a Rust CoreMediaIO system
+extension prototype.
 
-The goal is still the same: combine frames from several cameras into one video frame and expose that frame as `CameraMan Virtual Camera`. The previous non-Rust prototype was removed from the repository so the codebase can grow from a clean Rust foundation.
+## What Works
 
-## Current Status
+- Rust library, CLI, app, and extension binaries compile.
+- The app launches with `cargo run`.
+- Synthetic sources compose into a 1920x1080 preview.
+- Real camera discovery and capture use `nokhwa`.
+- Real mode supports multiple selected cameras.
+- The app can start/stop preview, switch layout, switch fps mode, export PPM, and write virtual-output frames.
+- `FrameSpoolSink` publishes the latest composed frame to the OS temp directory or `CAMERAMAN_FRAME_SPOOL`.
+- `cameraman-extension` reads the frame spool and sends CoreMediaIO `CMSampleBuffer` frames.
+- The extension generates placeholder frames when the app has not published a frame yet.
+- The app can request system-extension activation and show the activation status.
+- The CLI can build `target/CameraMan.app` and embed the `.systemextension`.
+- Unit tests cover frame validation, layout, rendering, PPM output, pipeline behavior, capture classification, and frame transport.
 
-What works now:
+## Important Limits
 
-- Rust library and binary compile.
-- Core frame model exists.
-- Output video format is centralized.
-- Grid, row, and column layouts are implemented.
-- BGRA compositor is implemented in pure Rust.
-- Synthetic demo frames can be rendered.
-- The pipeline can write a PPM frame sequence through a Rust sink.
-- A Rust desktop app exists through `eframe`/`egui`.
-- The app has source toggles, layout switching, start/stop preview, render tick, PPM export, preview area, and status bar.
-- The app writes live composed BGRA frames to a Rust frame-spool sink for the virtual-camera extension.
-- Real camera discovery exists through `nokhwa`.
-- The app has a real-camera mode with non-blocking background capture.
-- The CLI can list cameras and attempt a bounded real-frame capture.
-- The CLI can create a macOS `.app` bundle with `NSCameraUsageDescription`.
-- The CLI can create and embed a Rust `.systemextension` bundle.
-- The Rust CoreMediaIO system-extension provider creates a virtual device and source stream.
-- The extension declares a 1920x1080 BGRA/30fps stream format.
-- The extension reads composed app frames from the Rust frame spool and sends them as `CMSampleBuffer` frames.
-- The extension falls back to generated placeholder frames when the app has not published a frame yet.
-- Bundles are best-effort ad-hoc signed for local development.
-- Unit tests cover frame validation, frame transport, layout calculation, composition, PPM output, and pipeline ticks.
-
-What is intentionally not done yet:
-
-- Production-grade app-group IPC and entitlement hardening for frame transport.
-- Signed/notarized release packaging.
-
-Real capture is present, but macOS may require launching the bundled app and approving camera access before frames arrive.
-The virtual-camera extension is a development backend: macOS still requires system-extension approval, and production distribution still needs proper signing/notarization.
-The default development frame spool path is the `CAMERAMAN_FRAME_SPOOL` environment variable if set, otherwise `cameraman-virtual-frame.bgra` inside the OS temp directory (`std::env::temp_dir()`, i.e. `$TMPDIR` on macOS, not literally `/tmp`).
-
-Known limitations found by review, not yet fixed (see `arhitecture.md` section 8a for detail):
-
-- `src/extension_main.rs` is a first working prototype of a real CoreMediaIO extension, not
-  a hardened one: on failure it can panic and kill the whole extension host process, it
-  accepts any local client without checking who is connecting, and a couple of internal
-  Core Foundation object lifetimes are worth re-checking before this ships beyond local
-  development.
-- Stopping and immediately restarting the same physical camera (or switching cameras
-  quickly) can race the old capture thread's shutdown against the new one's open.
-- `CaptureErrorKind::classify` is a keyword heuristic over vendor error text; it is
-  documented as best-effort and will misclassify contrived multi-cause messages.
+- The default bundle is ad-hoc signed. It launches, but macOS will not install the system extension from it.
+- Installing the extension requires a provisioning profile that grants `com.apple.developer.system-extension.install`.
+- Signing with an Apple Development certificate alone is not enough; without a matching provisioning profile, macOS kills the app with `No matching profile found`.
+- The file-based frame spool is a development bridge, not the final production IPC.
+- The CoreMediaIO extension is a working prototype and still needs unsafe-boundary hardening.
 
 ## Run
+
+Launch the app:
 
 ```bash
 cargo run
 ```
 
-This launches the desktop app.
-
-Launch it explicitly:
+Launch explicitly:
 
 ```bash
 cargo run -- app
 ```
 
-Render one synthetic demo frame:
+Print status:
 
 ```bash
-cargo run -- demo
+cargo run -- status
 ```
 
-The demo writes:
-
-```text
-target/camera-man-demo.ppm
-```
-
-Render three frames through the full pipeline into a PPM sequence:
-
-```bash
-cargo run -- pipeline-demo
-```
-
-The pipeline demo writes:
-
-```text
-target/camera-man-pipeline-demo/frame-000001.ppm
-target/camera-man-pipeline-demo/frame-000002.ppm
-target/camera-man-pipeline-demo/frame-000003.ppm
-```
-
-Print normalized config:
-
-```bash
-cargo run -- check
-```
-
-Query real cameras:
+List cameras:
 
 ```bash
 cargo run -- list-cameras
 ```
 
-Capture one real camera frame with a 5 second timeout:
+Capture one real camera frame:
 
 ```bash
 cargo run -- capture-demo
 ```
 
-Create a macOS app bundle with camera permission metadata:
+Render a synthetic demo frame:
+
+```bash
+cargo run -- demo
+```
+
+Render three pipeline frames:
+
+```bash
+cargo run -- pipeline-demo
+```
+
+Build the app bundle:
 
 ```bash
 cargo run -- bundle
 open target/CameraMan.app
 ```
 
-Create only the Rust system-extension bundle:
+Build only the extension bundle:
 
 ```bash
 cargo run -- bundle-extension
 ```
 
-Run tests:
+Run checks:
 
 ```bash
+cargo fmt --check
+cargo clippy -- -D warnings
 cargo test
 ```
 
-Format:
+## System Extension Install
+
+For local UI and frame-spool testing, the ad-hoc bundle is enough:
 
 ```bash
-cargo fmt
+cargo run -- bundle
+open target/CameraMan.app
 ```
+
+For a real system-extension install, the app must be:
+
+- built as a `.app`;
+- launched from an installed bundle such as `/Applications/CameraMan.app`;
+- signed with a valid Apple signing identity;
+- embedded with a provisioning profile matching `com.cameraman.rust`;
+- granted `com.apple.developer.system-extension.install`;
+- approved by the user in System Settings after activation is requested.
+
+Build with explicit signing inputs:
+
+```bash
+CODESIGN_IDENTITY="Apple Development: Name (TEAMID)" \
+CAMERAMAN_PROVISIONING_PROFILE="/path/to/CameraMan.provisionprofile" \
+cargo run -- bundle
+```
+
+The app exposes an `Install extension` button, but macOS will reject activation
+until signing and provisioning are correct.
 
 ## Repository Layout
 
 ```text
-src/main.rs             CLI entry point
-src/extension_main.rs   Rust CoreMediaIO provider, device, source stream, frame-spool reader
-src/app.rs              Rust desktop app
+src/main.rs             CLI entry point, demos, bundling, signing helpers
+src/app.rs              egui desktop app and preview workflow
 src/lib.rs              public module exports
-src/capture.rs          real camera discovery/capture through nokhwa
-src/config.rs           video and virtual camera config
-src/error.rs            shared error type
-src/frame.rs            BGRA frame model
+src/config.rs           output and virtual camera config
+src/error.rs            shared error and capture classification
+src/frame.rs            BGRA frame and metadata model
 src/layout.rs           row, column, grid cell calculation
 src/render.rs           pure Rust compositor
-src/camera.rs           camera and frame source traits
-src/virtual_camera.rs   virtual camera sink trait and test sinks
-src/frame_transport.rs  file-based frame-spool bridge (FrameSpoolSink, read_latest_frame)
+src/camera.rs           camera discovery/source traits and synthetic source
+src/capture.rs          real camera discovery/capture through nokhwa
+src/virtual_camera.rs   virtual camera sink trait and memory sink
+src/frame_transport.rs  file-based frame-spool bridge
+src/pipeline.rs         source -> compose -> sink orchestration
 src/ppm.rs              PPM writer and PPM sequence sink
-src/pipeline.rs         capture -> compose -> sink orchestration
+src/system_extension.rs OSSystemExtensionRequest activation bridge
+src/extension_main.rs   Rust CoreMediaIO provider/device/stream process
 
-arhitecture.md          architecture notes and Rust-only decomposition
-recommendation.md       500 Rust-only recommendations and next steps
+architecture.md         architecture, SOLID/DRY split, design notes, 3 iterations
+recommendation.md       exactly 500 review items, improvements, problems, and next steps
 ```
 
 ## Architecture
 
-The project is split around stable boundaries:
+The project is split around stable Rust boundaries:
 
 ```text
 FrameSource
   -> CapturedFrame
-  -> PipelineEngine
   -> Compositor
+  -> Frame
   -> VirtualCameraSink
 ```
 
-The pure Rust core does not know about macOS APIs. Platform-specific work should live behind traits:
+Platform work is isolated:
 
-- real camera capture implements `FrameSource`;
-- macOS virtual camera output stays behind Rust boundaries;
-- file/debug output can also implement `VirtualCameraSink`;
-- the Rust desktop app uses the same frame, layout, render, and PPM output core as the CLI.
+- real camera input implements `FrameSource`;
+- virtual output implements `VirtualCameraSink`;
+- app-to-extension transport lives in `frame_transport.rs`;
+- system-extension activation lives in `system_extension.rs`;
+- CoreMediaIO provider code lives in `extension_main.rs`.
 
-This keeps the hard platform work isolated and lets the frame/layout/rendering code stay easy to test.
+See [architecture.md](architecture.md) for the full SOLID/DRY map and learning path.
 
 ## Design Direction
 
-CameraMan should feel like a focused desktop utility, not a marketing page.
+CameraMan should feel like a focused desktop utility:
 
-The current app is a first usable UI. It shows:
+- dense controls, not a marketing page;
+- preview first, diagnostics second;
+- checkboxes for sources;
+- segmented controls for mode/layout/fps;
+- status text for real state, not decorative copy;
+- clear warnings for signing, camera access, and extension approval.
 
-- synthetic source cameras;
-- selected layout;
-- preview;
-- start/stop state;
-- output status;
-- diagnostics only when needed.
+Current UI gaps:
 
-Avoid decorative screens, oversized hero sections, and vague onboarding text. The useful work should be visible immediately.
+- install-extension state should explain missing entitlement/profile before the user clicks;
+- settings are not persisted;
+- the left panel is not resizable;
+- the frame-spool path has no reveal/copy action;
+- visual regression checks are not automated.
 
-## Next Implementation Order
+## Three Iterations
 
-1. Keep the pure Rust core green with tests.
-2. Add a real camera capture adapter in Rust.
-3. Bridge composed app frames into the CoreMediaIO extension stream.
-4. Replace the current one-camera real mode with multi-camera real selection.
-5. Add release packaging only after capture and sink are stable.
+Iteration 1: Rust core
 
-## Important macOS Note
+- frame model;
+- layout calculation;
+- compositor;
+- pipeline;
+- PPM output;
+- core tests.
 
-Modern macOS virtual cameras are tied to CoreMediaIO system extension APIs. This project now uses Rust `objc2` bindings for that provider layer; the remaining backend work is the frame transport between the app pipeline and the extension stream.
+Iteration 2: Real input and app
+
+- camera discovery;
+- threaded capture;
+- multi-camera real mode;
+- app preview;
+- fps controls;
+- status bar and export.
+
+Iteration 3: Virtual output and packaging
+
+- frame-spool transport;
+- Rust CoreMediaIO extension;
+- system-extension activation request;
+- app and extension bundling;
+- development signing;
+- documented production signing gap.

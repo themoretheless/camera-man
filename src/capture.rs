@@ -45,6 +45,9 @@ pub struct NokhwaFrameSource {
 pub struct ThreadedNokhwaFrameSource {
     latest: Arc<Mutex<Option<CapturedFrame>>>,
     last_error: Arc<Mutex<Option<CameraManError>>>,
+    /// Set once the worker has actually opened the device; `None` while still
+    /// warming up. This is the camera's real negotiated rate, not a guess.
+    negotiated_fps: Arc<Mutex<Option<u32>>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -82,6 +85,14 @@ impl NokhwaFrameSource {
     }
 }
 
+impl NokhwaFrameSource {
+    /// The frame rate actually negotiated with the device at open time (via
+    /// `RequestedFormatType::AbsoluteHighestFrameRate`), not a guess.
+    pub fn frame_rate(&self) -> u32 {
+        self.camera.frame_rate()
+    }
+}
+
 impl FrameSource for NokhwaFrameSource {
     fn latest_frame(&mut self) -> Result<Option<CapturedFrame>, CameraManError> {
         let buffer = self.camera.frame().map_err(nokhwa_error)?;
@@ -108,26 +119,44 @@ impl ThreadedNokhwaFrameSource {
     pub fn open_id(id: &str) -> Self {
         let latest = Arc::new(Mutex::new(None));
         let last_error = Arc::new(Mutex::new(None));
+        let negotiated_fps = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
 
         let worker_latest = Arc::clone(&latest);
         let worker_last_error = Arc::clone(&last_error);
+        let worker_negotiated_fps = Arc::clone(&negotiated_fps);
         let worker_stop = Arc::clone(&stop);
         let worker_id = id.to_string();
 
         let worker = thread::Builder::new()
             .name(format!("camera-capture-{id}"))
             .spawn(move || {
-                run_capture_worker(&worker_id, &worker_latest, &worker_last_error, &worker_stop);
+                run_capture_worker(
+                    &worker_id,
+                    &worker_latest,
+                    &worker_last_error,
+                    &worker_negotiated_fps,
+                    &worker_stop,
+                );
             })
             .expect("failed to spawn camera capture thread");
 
         Self {
             latest,
             last_error,
+            negotiated_fps,
             stop,
             worker: Some(worker),
         }
+    }
+
+    /// The camera's real negotiated frame rate, once known. `None` until the
+    /// worker thread has finished opening the device.
+    pub fn negotiated_fps(&self) -> Option<u32> {
+        *self
+            .negotiated_fps
+            .lock()
+            .expect("camera fps mutex poisoned")
     }
 }
 
@@ -141,6 +170,7 @@ fn run_capture_worker(
     id: &str,
     latest: &Arc<Mutex<Option<CapturedFrame>>>,
     last_error: &Arc<Mutex<Option<CameraManError>>>,
+    negotiated_fps: &Arc<Mutex<Option<u32>>>,
     stop: &Arc<AtomicBool>,
 ) {
     let mut source = match NokhwaFrameSource::open_id(id) {
@@ -150,6 +180,7 @@ fn run_capture_worker(
             return;
         }
     };
+    *negotiated_fps.lock().expect("camera fps mutex poisoned") = Some(source.frame_rate());
 
     while !stop.load(Ordering::Relaxed) {
         let outcome = panic::catch_unwind(AssertUnwindSafe(|| source.latest_frame()));

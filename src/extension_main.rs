@@ -3,7 +3,7 @@ mod macos_extension {
     use std::path::PathBuf;
     use std::ptr::NonNull;
     use std::sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicPtr, Ordering},
     };
     use std::thread;
@@ -15,7 +15,7 @@ mod macos_extension {
     use objc2::rc::Retained;
     use objc2::runtime::ProtocolObject;
     use objc2::{AnyThread, DefinedClass, define_class, extern_methods, msg_send};
-    use objc2_core_foundation::CFRetained;
+    use objc2_core_foundation::{CFRetained, CFRunLoop};
     use objc2_core_media::{
         CMFormatDescription, CMSampleBuffer, CMSampleTimingInfo, CMTime, CMVideoFormatDescription,
         CMVideoFormatDescriptionCreate, kCMTimeInvalid,
@@ -47,7 +47,16 @@ mod macos_extension {
     const STREAM_UUID: &str = "A3B8C2D1-4E5F-4A6B-8C7D-9E0F1A2B3C4D";
     const OUTPUT_WIDTH: i32 = 1920;
     const OUTPUT_HEIGHT: i32 = 1080;
-    const OUTPUT_FPS: i32 = 30;
+    /// Nominal ceiling advertised to CMIO clients via `CMIOExtensionStreamFormat`
+    /// (used only by `formats()`, which per the CMIOExtensionStreamSource contract
+    /// should not change between calls, so this must stay fixed). The rate frames
+    /// actually arrive at tracks whatever the app is really producing (see
+    /// `FrameSpoolReader`/`stream_samples`): this is a ceiling, not a promise.
+    const ADVERTISED_FPS: i32 = 60;
+    /// Cadence assumed before the first real frame has arrived from the app (or
+    /// if the spool file cannot be read at all), so the placeholder still
+    /// animates at a sane rate instead of guessing from `ADVERTISED_FPS`.
+    const FALLBACK_FPS: u32 = 30;
 
     struct StreamSourceIvars {
         stream: AtomicPtr<CMIOExtensionStream>,
@@ -74,14 +83,26 @@ mod macos_extension {
             #[unsafe(method(connectClient:error:))]
             fn connect_client_error(
                 &self,
-                _client: &CMIOExtensionClient,
+                client: &CMIOExtensionClient,
                 _out_error: *mut *mut NSError,
             ) -> bool {
+                // The bindings this crate uses only expose an opaque per-connection
+                // clientID (a UUID minted by CMIO), not the caller's code-signing
+                // identity, so this cannot actually verify who is connecting; it
+                // only makes connections visible in logs. Any local process can
+                // still attach. See recommendation.md item 514.
+                eprintln!("CameraMan: client connected ({})", unsafe {
+                    client.clientID()
+                });
                 true
             }
 
             #[unsafe(method(disconnectClient:))]
-            fn disconnect_client(&self, _client: &CMIOExtensionClient) {}
+            fn disconnect_client(&self, client: &CMIOExtensionClient) {
+                eprintln!("CameraMan: client disconnected ({})", unsafe {
+                    client.clientID()
+                });
+            }
 
             #[unsafe(method_id(availableProperties))]
             fn available_properties(&self) -> Retained<NSSet<CMIOExtensionProperty>> {
@@ -215,7 +236,14 @@ mod macos_extension {
             }
 
             #[unsafe(method(authorizedToStartStreamForClient:))]
-            fn authorized_to_start_stream_for_client(&self, _client: &CMIOExtensionClient) -> bool {
+            fn authorized_to_start_stream_for_client(&self, client: &CMIOExtensionClient) -> bool {
+                // See the comment on connect_client_error: this only logs, it
+                // does not actually verify the caller. Any local process can
+                // start the stream. See recommendation.md item 514.
+                eprintln!(
+                    "CameraMan: stream start authorized for client ({})",
+                    unsafe { client.clientID() }
+                );
                 true
             }
 
@@ -294,7 +322,13 @@ mod macos_extension {
             }
         }
 
-        fn latest_frame(&mut self) -> Option<&Frame> {
+        /// Re-reads the spool and returns the latest known frame together
+        /// with its producer-reported fps. Both come from the same read, in
+        /// one `&mut self` call, so callers never observe a frame from one
+        /// tick paired with an fps from a different tick (a two-method split
+        /// here would also fight the borrow checker: the `&Frame` returned
+        /// would keep `self` mutably borrowed for as long as it is held).
+        fn poll(&mut self) -> (Option<&Frame>, u32) {
             match read_latest_frame(&self.path) {
                 Ok(Some(frame)) => {
                     self.last_error = None;
@@ -309,10 +343,21 @@ mod macos_extension {
                     }
                 }
             }
-            self.last_frame.as_ref().map(|transport| &transport.frame)
+            let fps = self
+                .last_frame
+                .as_ref()
+                .map_or(FALLBACK_FPS, |transport| transport.fps.max(1));
+            (
+                self.last_frame.as_ref().map(|transport| &transport.frame),
+                fps,
+            )
         }
     }
 
+    /// Fields are never read after construction; they exist only so `Drop`
+    /// does not run on the retained ObjC objects while `keep_alive` blocks
+    /// forever in `CFRunLoop::run()`.
+    #[allow(dead_code)]
     struct ExtensionLifetime {
         provider_source: Retained<ProviderSource>,
         device_source: Retained<DeviceSource>,
@@ -325,8 +370,17 @@ mod macos_extension {
     pub fn run() {
         eprintln!("CameraMan Rust CoreMediaIO extension process started.");
 
-        let lifetime =
-            unsafe { create_extension().expect("failed to create CoreMediaIO extension") };
+        // A panic here would abort the whole extension host process (there is
+        // nothing above us to catch it), so a setup failure is reported and
+        // the process exits cleanly instead of via `.expect()`.
+        let lifetime = match unsafe { create_extension() } {
+            Ok(lifetime) => lifetime,
+            Err(error) => {
+                let message = error.localizedDescription().to_string();
+                eprintln!("CameraMan: failed to create CoreMediaIO extension: {message}");
+                std::process::exit(1);
+            }
+        };
         unsafe {
             CMIOExtensionProvider::startServiceWithProvider(&lifetime.provider);
         }
@@ -388,8 +442,8 @@ mod macos_extension {
     }
 
     fn stream_format() -> Option<Retained<CMIOExtensionStreamFormat>> {
-        let description = video_format_description()?;
-        let frame_duration = unsafe { CMTime::new(1, OUTPUT_FPS) };
+        let description = cached_video_format_description()?;
+        let frame_duration = unsafe { CMTime::new(1, ADVERTISED_FPS) };
         Some(unsafe {
             CMIOExtensionStreamFormat::streamFormatWithFormatDescription_maxFrameDuration_minFrameDuration_validFrameDurations(
                 &description,
@@ -398,6 +452,18 @@ mod macos_extension {
                 None,
             )
         })
+    }
+
+    /// The format never changes (fixed 1920x1080 BGRA/30fps), so it is built
+    /// once and reused. `formats()` is queried by clients and
+    /// `create_sample_buffer` calls this once per frame (30 times a second);
+    /// recreating a `CMVideoFormatDescription` on every call both violates the
+    /// CMIOExtensionStreamSource contract that formats do not change between
+    /// calls and, per the Core Foundation Create Rule, leaked one reference
+    /// per call since nothing here ever released the previous one.
+    fn cached_video_format_description() -> Option<CFRetained<CMFormatDescription>> {
+        static DESCRIPTION: OnceLock<Option<CFRetained<CMFormatDescription>>> = OnceLock::new();
+        DESCRIPTION.get_or_init(video_format_description).clone()
     }
 
     fn video_format_description() -> Option<CFRetained<CMFormatDescription>> {
@@ -423,41 +489,54 @@ mod macos_extension {
         Some(description)
     }
 
+    /// Polls the frame spool and forwards samples at whatever cadence the
+    /// app is actually producing (`TransportFrame.fps`), not a fixed
+    /// constant: a 60fps-capable camera is no longer artificially capped at
+    /// 30 just because that used to be the only number anywhere in this
+    /// pipeline. Falls back to `FALLBACK_FPS` before the first real frame
+    /// arrives, or if the app has not written one at all (placeholder-only).
     fn stream_samples(handle: StreamHandle, streaming: Arc<AtomicBool>) {
         let Some(stream) = handle.retain() else {
             streaming.store(false, Ordering::SeqCst);
             return;
         };
 
-        let frame_interval = Duration::from_nanos(1_000_000_000 / OUTPUT_FPS as u64);
         let mut sequence = 0_u64;
         let mut frame_reader = FrameSpoolReader::new(default_frame_spool_path());
         while streaming.load(Ordering::SeqCst) {
-            let app_frame = frame_reader.latest_frame();
-            if let Some(sample) = create_sample_buffer(sequence, app_frame) {
+            let (app_frame, fps) = frame_reader.poll();
+            let host_time_nanos = host_time_nanoseconds();
+            if let Some(sample) = create_sample_buffer(sequence, fps, host_time_nanos, app_frame) {
                 unsafe {
                     stream.sendSampleBuffer_discontinuity_hostTimeInNanoseconds(
                         &sample,
                         CMIOExtensionStreamDiscontinuityFlags::None,
-                        host_time_nanoseconds(),
+                        host_time_nanos,
                     );
                 }
             }
             sequence = sequence.wrapping_add(1);
-            thread::sleep(frame_interval);
+            thread::sleep(Duration::from_nanos(1_000_000_000 / u64::from(fps)));
         }
     }
 
     fn create_sample_buffer(
         sequence: u64,
+        fps: u32,
+        host_time_nanos: u64,
         app_frame: Option<&Frame>,
     ) -> Option<CFRetained<CMSampleBuffer>> {
         let pixel_buffer = create_pixel_buffer(sequence, app_frame)?;
-        let format_description = video_format_description()?;
-        let duration = unsafe { CMTime::new(1, OUTPUT_FPS) };
+        let format_description = cached_video_format_description()?;
+        let duration = unsafe { CMTime::new(1, fps.min(i32::MAX as u32) as i32) };
         let mut timing = CMSampleTimingInfo {
             duration,
-            presentationTimeStamp: unsafe { CMTime::new(sequence as i64, OUTPUT_FPS) },
+            // Real host-clock nanoseconds, not sequence/fps: that stays
+            // monotonic even across an fps change mid-stream, whereas a
+            // frame-count-scaled timestamp would jump backwards the instant
+            // fps changes (e.g. sequence 100 at 30fps is 3.33s in, but the
+            // same sequence at 60fps would be 1.67s: a step backwards).
+            presentationTimeStamp: unsafe { CMTime::new(host_time_nanos as i64, 1_000_000_000) },
             decodeTimeStamp: unsafe { kCMTimeInvalid },
         };
         let mut raw_sample: *mut CMSampleBuffer = std::ptr::null_mut();
@@ -590,18 +669,16 @@ mod macos_extension {
         ((ticks as f64 / frequency) * 1_000_000_000.0) as u64
     }
 
+    /// Keeps every retained object alive and runs the current thread's
+    /// CFRunLoop, which is what Apple's own Camera Extension sample code
+    /// does after starting the provider service: it is what actually
+    /// services the mach-port sources CMIO registers for client
+    /// connections, not just a way to avoid exiting. A plain sleep loop
+    /// left those unserviced.
     fn keep_alive(lifetime: ExtensionLifetime) -> ! {
         let _lifetime = lifetime;
-        loop {
-            let _ = (
-                &_lifetime.provider_source,
-                &_lifetime.device_source,
-                &_lifetime.stream_source,
-                &_lifetime.device,
-                &_lifetime.stream,
-            );
-            thread::sleep(Duration::from_secs(60));
-        }
+        CFRunLoop::run();
+        unreachable!("CFRunLoop::run() does not return");
     }
 }
 

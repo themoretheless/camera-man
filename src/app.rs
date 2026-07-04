@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 
 use camera_man::FrameSource;
 use camera_man::{
-    CameraDevice, CameraDiscovery, CapturedFrame, CompositionLayout, Compositor, Frame,
-    FrameSpoolSink, NokhwaCameraDiscovery, PixelFormat, SyntheticFrameSource,
-    ThreadedNokhwaFrameSource, VideoFormat, VirtualCameraSink, write_ppm,
+    CameraDevice, CameraDiscovery, CapturedFrame, CompositionLayout, Compositor,
+    ExtensionActivationStatus, ExtensionInstaller, Frame, FrameSpoolSink, NokhwaCameraDiscovery,
+    PixelFormat, SyntheticFrameSource, ThreadedNokhwaFrameSource, VideoFormat, VirtualCameraSink,
+    write_ppm,
 };
 use eframe::egui;
 
@@ -14,16 +15,32 @@ const OUTPUT_HEIGHT: u32 = 1080;
 const SOURCE_WIDTH: u32 = 320;
 const SOURCE_HEIGHT: u32 = 240;
 
-/// 1/30 s in nanoseconds. Integer milliseconds (1000/30 = 33 ms) drift to ~30.3
-/// fps and, combined with 16 ms repaints, the old code averaged ~21 fps.
-const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 30);
+/// Fixed fps choices offered next to "Auto" in the UI.
+const FPS_PRESETS: [u32; 4] = [15, 24, 30, 60];
+/// What Auto resolves to before any real camera has reported its negotiated
+/// rate (Synthetic mode, or Real mode before Start / before the capture
+/// thread finishes opening the device). Matches the old hardcoded behavior.
+const DEFAULT_FPS: u32 = 30;
 /// How long a non-error event (export confirmation etc.) stays in the status bar.
 const EVENT_TTL: Duration = Duration::from_secs(4);
-/// Errors stay longer so a 30 fps render loop cannot wipe them instantly.
+/// Errors stay longer so a fast render loop cannot wipe them instantly.
 const ERROR_TTL: Duration = Duration::from_secs(8);
-/// Consecutive capture failures (~3 s at 30 fps) before the preview auto-stops
-/// instead of hammering a broken camera and spamming the status bar.
+/// Consecutive capture failures (roughly 3 s at the active fps) before the
+/// preview auto-stops instead of hammering a broken camera and spamming the
+/// status bar.
 const MAX_CAPTURE_ERROR_STREAK: u32 = 90;
+
+/// How to pick the render/output frame rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpsMode {
+    /// The highest frame rate actually negotiated across the selected real
+    /// cameras (`ThreadedNokhwaFrameSource::negotiated_fps`), so a 60fps
+    /// camera is not artificially capped at some arbitrary default. Falls
+    /// back to `DEFAULT_FPS` for Synthetic mode or before any camera has
+    /// finished opening.
+    Auto,
+    Fixed(u32),
+}
 
 // Palette: one place for every hardcoded color in the app.
 const COLOR_WINDOW: egui::Color32 = egui::Color32::from_rgb(24, 27, 31);
@@ -88,8 +105,17 @@ pub struct CameraManApp {
     sources: Vec<SourceSlot>,
     input_mode: InputMode,
     real_devices: Vec<CameraDevice>,
-    selected_real_id: Option<String>,
-    real_source: Option<ThreadedNokhwaFrameSource>,
+    /// Selection order doubles as composition order (first checked -> first cell).
+    selected_real_ids: Vec<String>,
+    /// Only devices currently in `selected_real_ids` have an entry here;
+    /// unchecking a device drops its entry immediately, releasing the camera.
+    real_sources: Vec<(String, ThreadedNokhwaFrameSource)>,
+    extension_installer: ExtensionInstaller,
+    fps_mode: FpsMode,
+    /// The fps actually in effect right now: either the fixed choice, or (in
+    /// Auto) the max negotiated across open real cameras / `DEFAULT_FPS`.
+    /// Recomputed at the top of every `render_preview` call.
+    active_fps: u32,
     layout: CompositionLayout,
     compositor: Compositor,
     running: bool,
@@ -118,7 +144,7 @@ impl CameraManApp {
         let format = VideoFormat {
             width: OUTPUT_WIDTH,
             height: OUTPUT_HEIGHT,
-            fps: 30,
+            fps: DEFAULT_FPS,
             pixel_format: PixelFormat::Bgra8,
         };
         let mut app = Self {
@@ -150,8 +176,11 @@ impl CameraManApp {
             ],
             input_mode: InputMode::Synthetic,
             real_devices: Vec::new(),
-            selected_real_id: None,
-            real_source: None,
+            selected_real_ids: Vec::new(),
+            real_sources: Vec::new(),
+            extension_installer: ExtensionInstaller::new(),
+            fps_mode: FpsMode::Auto,
+            active_fps: DEFAULT_FPS,
             layout: CompositionLayout::Grid,
             compositor: Compositor::new(format),
             running: false,
@@ -180,7 +209,7 @@ impl CameraManApp {
     fn selected_count(&self) -> usize {
         match self.input_mode {
             InputMode::Synthetic => self.sources.iter().filter(|source| source.selected).count(),
-            InputMode::Real => usize::from(self.selected_real_id.is_some()),
+            InputMode::Real => self.selected_real_ids.len(),
         }
     }
 
@@ -209,18 +238,58 @@ impl CameraManApp {
         }
     }
 
-    /// Stops the render loop AND releases the camera. Keeping the camera open
-    /// after Stop leaves the LED on and looks like spying.
+    /// Stops the render loop AND releases every open camera. Keeping a
+    /// camera open after Stop leaves its LED on and looks like spying.
     fn stop_streaming(&mut self) {
         self.running = false;
-        self.real_source = None;
+        self.real_sources.clear();
         self.waiting_for_camera = false;
         self.measured_fps = 0.0;
         self.disconnect_virtual_output();
+        // No real sources left open: in Auto mode this drops back to DEFAULT_FPS
+        // immediately instead of showing a stale negotiated rate.
+        self.recompute_active_fps();
+    }
+
+    /// Recomputes `active_fps` (and pushes it into the compositor/virtual
+    /// sink) from the current `fps_mode` and whichever real cameras are open
+    /// right now. Cheap: only rebuilds anything when the value actually
+    /// changed. Auto mode "catches up" a frame or two after Start, once the
+    /// capture thread(s) finish negotiating with the device(s).
+    fn recompute_active_fps(&mut self) {
+        let fps = match self.fps_mode {
+            FpsMode::Fixed(fps) => fps,
+            FpsMode::Auto => self
+                .real_sources
+                .iter()
+                .filter_map(|(_, source)| source.negotiated_fps())
+                .max()
+                .unwrap_or(DEFAULT_FPS),
+        }
+        .max(1);
+
+        if fps == self.active_fps {
+            return;
+        }
+        self.active_fps = fps;
+        self.virtual_sink.set_target_fps(fps);
+        self.compositor = Compositor::new(VideoFormat {
+            width: OUTPUT_WIDTH,
+            height: OUTPUT_HEIGHT,
+            fps,
+            pixel_format: PixelFormat::Bgra8,
+        });
+    }
+
+    /// Render-loop cadence derived from `active_fps`. A method, not a
+    /// constant, so it always reflects the current Auto/Fixed choice.
+    fn frame_interval(&self) -> Duration {
+        Duration::from_nanos(1_000_000_000 / u64::from(self.active_fps.max(1)))
     }
 
     fn render_preview(&mut self, ctx: &egui::Context, allow_open_camera: bool) {
         self.waiting_for_camera = false;
+        self.recompute_active_fps();
         let frames = match self.input_mode {
             InputMode::Synthetic => self
                 .sources
@@ -228,7 +297,7 @@ impl CameraManApp {
                 .filter(|source| source.selected)
                 .map(|source| self.synthetic_frame(source))
                 .collect::<Result<Vec<_>, _>>(),
-            InputMode::Real => self.real_frame(allow_open_camera).map(|frame| vec![frame]),
+            InputMode::Real => self.real_frames(allow_open_camera),
         };
 
         let frames = match frames {
@@ -290,26 +359,67 @@ impl CameraManApp {
         frame_source.latest_frame()
     }
 
-    /// Returns the newest real camera frame. The camera is opened only when
-    /// `allow_open` is true (Start pressed / already streaming), never as a
-    /// side effect of switching modes or clicking around the UI.
-    fn real_frame(
+    /// Returns the newest frame from every selected real camera, in
+    /// selection order (so composition order matches check order, the same
+    /// way Synthetic mode's cell order matches its fixed source list).
+    ///
+    /// Cameras are opened only when `allow_open` is true (Start pressed /
+    /// already streaming), never as a side effect of switching modes or
+    /// checking a box. A single failing camera degrades to `None` for that
+    /// cell instead of aborting the whole composite (mirrors
+    /// `PipelineEngine::render_once`); only when EVERY selected camera is
+    /// currently failing does this return `Err`, matching the old
+    /// single-camera behavior for the "camera is broken" case.
+    fn real_frames(
         &mut self,
         allow_open: bool,
-    ) -> Result<Option<CapturedFrame>, camera_man::CameraManError> {
-        if self.real_source.is_none() {
-            if !allow_open {
-                return Ok(None);
+    ) -> Result<Vec<Option<CapturedFrame>>, camera_man::CameraManError> {
+        // Release cameras that were unchecked (or disappeared) since the last tick.
+        self.real_sources
+            .retain(|(id, _)| self.selected_real_ids.contains(id));
+
+        if allow_open {
+            for id in &self.selected_real_ids {
+                if !self.real_sources.iter().any(|(sid, _)| sid == id) {
+                    self.real_sources
+                        .push((id.clone(), ThreadedNokhwaFrameSource::open_id(id)));
+                }
             }
-            let Some(id) = self.selected_real_id.clone() else {
-                return Ok(None);
+        }
+
+        let mut frames = Vec::with_capacity(self.selected_real_ids.len());
+        let mut first_error = None;
+        let mut ok_count = 0;
+        for id in &self.selected_real_ids {
+            let Some((_, source)) = self.real_sources.iter_mut().find(|(sid, _)| sid == id) else {
+                frames.push(None);
+                continue;
             };
-            self.real_source = Some(ThreadedNokhwaFrameSource::open_id(&id));
+            match source.latest_frame() {
+                Ok(frame) => {
+                    if frame.is_some() {
+                        ok_count += 1;
+                    }
+                    frames.push(frame);
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    frames.push(None);
+                }
+            }
         }
-        match self.real_source.as_mut() {
-            Some(source) => source.latest_frame(),
-            None => Ok(None),
+
+        if ok_count == 0 {
+            if let Some(error) = first_error {
+                return Err(error);
+            }
+        } else if let Some(error) = first_error {
+            // Partial failure: one camera among several is broken. Surface it
+            // without aborting the composite the working cameras still produce.
+            self.set_event(error.to_string(), true);
         }
+
+        Ok(frames)
     }
 
     fn refresh_real_devices(&mut self, announce: bool) {
@@ -317,15 +427,16 @@ impl CameraManApp {
         match discovery.list_devices() {
             Ok(devices) => {
                 self.real_devices = devices;
-                if self
-                    .selected_real_id
-                    .as_ref()
-                    .is_none_or(|id| !self.real_devices.iter().any(|device| &device.id == id))
-                {
-                    self.selected_real_id =
-                        self.real_devices.first().map(|device| device.id.clone());
-                }
-                self.real_source = None;
+                let known_ids = self
+                    .real_devices
+                    .iter()
+                    .map(|device| device.id.clone())
+                    .collect::<Vec<_>>();
+                // Only drop selections/sources for cameras that actually
+                // disappeared; do not interrupt a running stream just
+                // because the user clicked Refresh.
+                self.selected_real_ids.retain(|id| known_ids.contains(id));
+                self.real_sources.retain(|(id, _)| known_ids.contains(id));
                 if announce {
                     if self.real_devices.is_empty() {
                         self.set_event("No cameras found", true);
@@ -339,8 +450,8 @@ impl CameraManApp {
             }
             Err(error) => {
                 self.real_devices.clear();
-                self.selected_real_id = None;
-                self.real_source = None;
+                self.selected_real_ids.clear();
+                self.real_sources.clear();
                 self.set_event(error.to_string(), true);
             }
         }
@@ -449,22 +560,34 @@ impl eframe::App for CameraManApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.running {
             let now = Instant::now();
-            if now.duration_since(self.last_frame_at) >= FRAME_INTERVAL {
-                // Advance by whole intervals to hold 30 fps cadence; resync when
-                // the app fell far behind (window hidden, heavy load).
-                self.last_frame_at += FRAME_INTERVAL;
-                if now.duration_since(self.last_frame_at) > FRAME_INTERVAL * 3 {
+            if now.duration_since(self.last_frame_at) >= self.frame_interval() {
+                // Advance by whole intervals to hold cadence; resync when the
+                // app fell far behind (window hidden, heavy load).
+                let interval = self.frame_interval();
+                self.last_frame_at += interval;
+                if now.duration_since(self.last_frame_at) > interval * 3 {
                     self.last_frame_at = now;
                 }
                 self.render_preview(ctx, true);
                 self.update_fps();
             }
+            let interval = self.frame_interval();
             let until_next =
-                FRAME_INTERVAL.saturating_sub(Instant::now().duration_since(self.last_frame_at));
-            ctx.request_repaint_after(until_next.min(FRAME_INTERVAL));
+                interval.saturating_sub(Instant::now().duration_since(self.last_frame_at));
+            ctx.request_repaint_after(until_next.min(interval));
         } else if self.event.as_ref().is_some_and(StatusEvent::is_visible) {
             // Keep repainting until the transient event expires from the status bar.
             ctx.request_repaint_after(Duration::from_millis(250));
+        }
+
+        // The extension activation delegate updates its status from an
+        // async macOS callback; poll for it even while paused so approving
+        // it in System Settings is reflected without needing to click anything.
+        if matches!(
+            self.extension_installer.status(),
+            ExtensionActivationStatus::Requesting | ExtensionActivationStatus::NeedsApproval
+        ) {
+            ctx.request_repaint_after(Duration::from_millis(500));
         }
 
         // Space toggles Start/Stop when no widget wants the keyboard.
@@ -564,20 +687,23 @@ impl CameraManApp {
                             .color(COLOR_DIM),
                     );
                 }
-                let mut selected_changed = false;
+                let mut selection_changed = false;
                 for device in &self.real_devices {
-                    selected_changed |= ui
-                        .radio_value(
-                            &mut self.selected_real_id,
-                            Some(device.id.clone()),
-                            &device.name,
-                        )
-                        .changed();
+                    let mut checked = self.selected_real_ids.contains(&device.id);
+                    if ui.checkbox(&mut checked, &device.name).changed() {
+                        if checked {
+                            self.selected_real_ids.push(device.id.clone());
+                        } else {
+                            self.selected_real_ids.retain(|id| id != &device.id);
+                        }
+                        selection_changed = true;
+                    }
                 }
-                if selected_changed {
-                    let was_running = self.running;
-                    self.stop_streaming();
-                    self.running = was_running;
+                if selection_changed {
+                    // real_frames() prunes real_sources for anything no longer
+                    // selected and only opens newly-checked cameras when
+                    // allow_open (i.e. self.running) is true, so unrelated
+                    // already-open cameras are left untouched here.
                     self.render_preview(ctx, self.running);
                 }
             }
@@ -593,6 +719,34 @@ impl CameraManApp {
         });
         if previous_layout != self.layout {
             self.render_preview(ctx, false);
+        }
+
+        ui.add_space(16.0);
+        ui.label("Target FPS");
+        let previous_fps_mode = self.fps_mode;
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.fps_mode, FpsMode::Auto, "Auto");
+            for &preset in &FPS_PRESETS {
+                ui.selectable_value(
+                    &mut self.fps_mode,
+                    FpsMode::Fixed(preset),
+                    preset.to_string(),
+                );
+            }
+        });
+        if previous_fps_mode != self.fps_mode {
+            self.recompute_active_fps();
+            self.render_preview(ctx, false);
+        }
+        if self.fps_mode == FpsMode::Auto {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Auto -> {} fps (highest negotiated across selected cameras)",
+                    self.active_fps
+                ))
+                .color(COLOR_DIM)
+                .small(),
+            );
         }
 
         ui.add_space(16.0);
@@ -654,7 +808,10 @@ impl CameraManApp {
         ui.separator();
         ui.add_space(12.0);
         ui.label("Output");
-        ui.monospace(format!("{}x{} BGRA @ 30 fps", OUTPUT_WIDTH, OUTPUT_HEIGHT));
+        ui.monospace(format!(
+            "{}x{} BGRA @ {} fps",
+            OUTPUT_WIDTH, OUTPUT_HEIGHT, self.active_fps
+        ));
         ui.monospace(self.export_path.display().to_string());
         ui.add_space(4.0);
         if ui
@@ -672,6 +829,31 @@ impl CameraManApp {
             "Virtual camera output: off"
         };
         ui.label(egui::RichText::new(virtual_label).color(COLOR_DIM).small());
+
+        ui.add_space(8.0);
+        if ui
+            .add_sized([190.0, 30.0], egui::Button::new("Install extension"))
+            .on_hover_text(
+                "Requests macOS activation of the CameraMan Virtual Camera system extension. \
+                 Only works when launched from an installed /Applications bundle.",
+            )
+            .clicked()
+        {
+            self.extension_installer.activate();
+        }
+        let extension_status = self.extension_installer.status();
+        let extension_color = match extension_status {
+            ExtensionActivationStatus::Activated
+            | ExtensionActivationStatus::WillCompleteAfterReboot => COLOR_OK,
+            ExtensionActivationStatus::NeedsApproval => COLOR_WARNING,
+            ExtensionActivationStatus::Failed(_) => COLOR_ERROR,
+            ExtensionActivationStatus::Idle | ExtensionActivationStatus::Requesting => COLOR_DIM,
+        };
+        ui.label(
+            egui::RichText::new(extension_status.to_string())
+                .color(extension_color)
+                .small(),
+        );
     }
 
     fn preview_ui(&self, ui: &mut egui::Ui) {

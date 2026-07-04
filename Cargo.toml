@@ -25,3 +25,5 @@ objc2-core-media = "0.3.2"
 objc2-core-media-io = "0.3.2"
 objc2-core-video = "0.3.2"
 objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSDictionary", "NSError", "NSObject", "NSSet", "NSString", "NSUUID", "NSValue"] }
+objc2-system-extensions = "0.3.2"
+dispatch2 = "0.3.1"

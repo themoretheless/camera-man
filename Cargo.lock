@@ -241,6 +241,7 @@ dependencies = [
 name = "camera-man"
 version = "0.1.0"
 dependencies = [
+ "dispatch2",
  "eframe",
  "nokhwa",
  "objc2 0.6.4",
@@ -249,6 +250,7 @@ dependencies = [
  "objc2-core-media-io",
  "objc2-core-video",
  "objc2-foundation 0.3.2",
+ "objc2-system-extensions",
 ]
 
 [[package]]
@@ -529,6 +531,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.13.0",
+ "block2 0.6.2",
+ "libc",
  "objc2 0.6.4",
 ]
 
@@ -1987,6 +1991,17 @@ checksum = "0a684efe3dec1b305badae1a28f6555f6ddd3bb2c2267896782858d5a78404dc"
 dependencies = [
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-system-extensions"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a00ca10e1fd778a1dd13d579afb37168422ef4bbb36b6723179c2228f6b8372c"
+dependencies = [
+ "dispatch2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]

@@ -109,8 +109,15 @@ pub struct CameraManApp {
     selected_real_ids: Vec<String>,
     /// Only devices currently in `selected_real_ids` have an entry here;
     /// unchecking a device drops its entry immediately, releasing the camera.
-    real_sources: Vec<(String, ThreadedNokhwaFrameSource)>,
+    /// The trailing `u32` is that camera's own consecutive-failure streak,
+    /// tracked per source so one broken camera in a multi-camera composite
+    /// gets dropped on its own instead of spamming the status bar forever or
+    /// depending on the global `capture_error_streak` (which only ever sees
+    /// the all-cameras-failing case).
+    real_sources: Vec<(String, ThreadedNokhwaFrameSource, u32)>,
     extension_installer: ExtensionInstaller,
+    /// Computed once at startup; see `extension_capable()`.
+    extension_capable: bool,
     fps_mode: FpsMode,
     /// The fps actually in effect right now: either the fixed choice, or (in
     /// Auto) the max negotiated across open real cameras / `DEFAULT_FPS`.
@@ -179,6 +186,7 @@ impl CameraManApp {
             selected_real_ids: Vec::new(),
             real_sources: Vec::new(),
             extension_installer: ExtensionInstaller::new(),
+            extension_capable: extension_capable(),
             fps_mode: FpsMode::Auto,
             active_fps: DEFAULT_FPS,
             layout: CompositionLayout::Grid,
@@ -262,7 +270,7 @@ impl CameraManApp {
             FpsMode::Auto => self
                 .real_sources
                 .iter()
-                .filter_map(|(_, source)| source.negotiated_fps())
+                .filter_map(|(_, source, _)| source.negotiated_fps())
                 .max()
                 .unwrap_or(DEFAULT_FPS),
         }
@@ -305,6 +313,15 @@ impl CameraManApp {
             Ok(_) => {
                 self.preview = None;
                 self.preview_texture = None;
+                // Reached both before any source is ever selected (running is
+                // already false, a no-op) and if every selected real camera
+                // disappears or gets auto-dropped while running: without this,
+                // `running` stayed true with no event set and the status bar
+                // kept showing "Preview running" with nothing being captured.
+                if self.running {
+                    self.stop_streaming();
+                    self.set_event("No sources left selected, preview stopped", true);
+                }
                 return;
             }
             Err(error) => {
@@ -370,19 +387,30 @@ impl CameraManApp {
     /// `PipelineEngine::render_once`); only when EVERY selected camera is
     /// currently failing does this return `Err`, matching the old
     /// single-camera behavior for the "camera is broken" case.
+    ///
+    /// Each source tracks its own consecutive-failure streak (the trailing
+    /// `u32` in `real_sources`). A source is auto-dropped (unchecked and
+    /// closed) once its own streak crosses `MAX_CAPTURE_ERROR_STREAK`,
+    /// mirroring the global auto-stop in `on_capture_error` but scoped to the
+    /// one broken camera instead of the whole preview. Without this, a
+    /// permanently broken secondary camera would re-post its error every
+    /// single tick forever: `set_event` always resets the message's TTL
+    /// clock, so a continuously recurring error never expires and blocks any
+    /// other status-bar message (export confirmations, etc.) from ever being
+    /// seen again.
     fn real_frames(
         &mut self,
         allow_open: bool,
     ) -> Result<Vec<Option<CapturedFrame>>, camera_man::CameraManError> {
         // Release cameras that were unchecked (or disappeared) since the last tick.
         self.real_sources
-            .retain(|(id, _)| self.selected_real_ids.contains(id));
+            .retain(|(id, _, _)| self.selected_real_ids.contains(id));
 
         if allow_open {
             for id in &self.selected_real_ids {
-                if !self.real_sources.iter().any(|(sid, _)| sid == id) {
+                if !self.real_sources.iter().any(|(sid, _, _)| sid == id) {
                     self.real_sources
-                        .push((id.clone(), ThreadedNokhwaFrameSource::open_id(id)));
+                        .push((id.clone(), ThreadedNokhwaFrameSource::open_id(id), 0));
                 }
             }
         }
@@ -390,21 +418,36 @@ impl CameraManApp {
         let mut frames = Vec::with_capacity(self.selected_real_ids.len());
         let mut first_error = None;
         let mut ok_count = 0;
+        // Collected during the loop and acted on after it: `real_sources` is
+        // mutably borrowed by the loop, so `self.set_event` cannot be called
+        // from inside it.
+        let mut new_failures = Vec::new();
+        let mut dropped_ids = Vec::new();
         for id in &self.selected_real_ids {
-            let Some((_, source)) = self.real_sources.iter_mut().find(|(sid, _)| sid == id) else {
+            let Some((_, source, streak)) =
+                self.real_sources.iter_mut().find(|(sid, _, _)| sid == id)
+            else {
                 frames.push(None);
                 continue;
             };
             match source.latest_frame() {
                 Ok(frame) => {
+                    *streak = 0;
                     if frame.is_some() {
                         ok_count += 1;
                     }
                     frames.push(frame);
                 }
                 Err(error) => {
-                    first_error.get_or_insert(error);
+                    if *streak == 0 {
+                        new_failures.push(error.to_string());
+                    }
+                    *streak += 1;
+                    if *streak >= MAX_CAPTURE_ERROR_STREAK {
+                        dropped_ids.push(id.clone());
+                    }
                     frames.push(None);
+                    first_error.get_or_insert(error);
                 }
             }
         }
@@ -413,10 +456,27 @@ impl CameraManApp {
             if let Some(error) = first_error {
                 return Err(error);
             }
-        } else if let Some(error) = first_error {
-            // Partial failure: one camera among several is broken. Surface it
-            // without aborting the composite the working cameras still produce.
-            self.set_event(error.to_string(), true);
+        } else {
+            // Partial failure: at least one camera among several is broken.
+            // Post each newly-failing camera's message once (not every tick)
+            // so it can still expire, and let the working cameras keep
+            // composing instead of aborting the whole preview.
+            for message in new_failures {
+                self.set_event(message, true);
+            }
+            if !dropped_ids.is_empty() {
+                let dropped_count = dropped_ids.len();
+                self.selected_real_ids
+                    .retain(|id| !dropped_ids.contains(id));
+                self.real_sources
+                    .retain(|(id, _, _)| !dropped_ids.contains(id));
+                self.set_event(
+                    format!(
+                        "{dropped_count} camera(s) kept failing and were removed from the composite"
+                    ),
+                    true,
+                );
+            }
         }
 
         Ok(frames)
@@ -436,7 +496,8 @@ impl CameraManApp {
                 // disappeared; do not interrupt a running stream just
                 // because the user clicked Refresh.
                 self.selected_real_ids.retain(|id| known_ids.contains(id));
-                self.real_sources.retain(|(id, _)| known_ids.contains(id));
+                self.real_sources
+                    .retain(|(id, _, _)| known_ids.contains(id));
                 if announce {
                     if self.real_devices.is_empty() {
                         self.set_event("No cameras found", true);
@@ -629,8 +690,57 @@ impl eframe::App for CameraManApp {
     }
 }
 
+/// Whether this run can plausibly activate the system extension: launched
+/// from an installed `.app` bundle (macOS looks for extensions under
+/// `Contents/Library/SystemExtensions` of the *running* application, so a
+/// bare `cargo run` binary never qualifies) AND that bundle was actually
+/// signed with `com.apple.developer.system-extension.install` (an ad-hoc or
+/// plain-signed bundle launches fine but can never activate anything; see
+/// `bundle_app` in main.rs). Reads the bundle's own entitlements via
+/// `codesign` rather than guessing from how it was built, so it reflects
+/// reality. Computed once at startup, not per frame: this only gates a UI
+/// hint and does not need to react to the bundle being re-signed while the
+/// app is already running.
+fn extension_capable() -> bool {
+    let Some(bundle) = current_app_bundle_path() else {
+        return false;
+    };
+    std::process::Command::new("codesign")
+        .args(["--display", "--entitlements", "-", "--xml"])
+        .arg(&bundle)
+        .output()
+        .is_ok_and(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .contains("com.apple.developer.system-extension.install")
+        })
+}
+
+/// The `.app` bundle containing the running executable (e.g.
+/// `/Applications/CameraMan.app`), or `None` for a bare binary such as
+/// `cargo run`'s `target/debug/camera-man`.
+fn current_app_bundle_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let macos_dir = exe.parent()?;
+    (macos_dir.file_name()? == "MacOS").then_some(())?;
+    let contents_dir = macos_dir.parent()?;
+    (contents_dir.file_name()? == "Contents").then_some(())?;
+    let bundle = contents_dir.parent()?;
+    (bundle.extension()? == "app").then(|| bundle.to_path_buf())
+}
+
 impl CameraManApp {
+    /// Scrolls when the window is near `with_min_inner_size`: the control
+    /// column has grown (Target FPS, Install extension) since the fixed
+    /// 304px-wide / full-height layout in `ui()` was first sized, and a
+    /// non-scrolling column would clip or overlap the status bar instead of
+    /// making everything reachable.
     fn controls_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| self.controls_ui_inner(ui, ctx));
+    }
+
+    fn controls_ui_inner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.add_space(8.0);
         ui.heading("CameraMan");
         ui.label(egui::RichText::new("Multi-camera preview").color(COLOR_DIM));
@@ -830,16 +940,35 @@ impl CameraManApp {
         };
         ui.label(egui::RichText::new(virtual_label).color(COLOR_DIM).small());
 
-        ui.add_space(8.0);
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(12.0);
+        ui.label("System Extension");
+        let capable = self.extension_capable;
         if ui
-            .add_sized([190.0, 30.0], egui::Button::new("Install extension"))
+            .add_enabled_ui(capable, |ui| {
+                ui.add_sized([190.0, 30.0], egui::Button::new("Install extension"))
+            })
+            .inner
             .on_hover_text(
-                "Requests macOS activation of the CameraMan Virtual Camera system extension. \
-                 Only works when launched from an installed /Applications bundle.",
+                "Requests macOS activation of the CameraMan Virtual Camera system extension.",
+            )
+            .on_disabled_hover_text(
+                "Only works when the app is signed with the system-extension.install entitlement \
+                 and launched from an installed /Applications bundle. Build with CODESIGN_IDENTITY \
+                 and CAMERAMAN_PROVISIONING_PROFILE set, then `cargo run -- bundle`, copy \
+                 target/CameraMan.app to /Applications, and launch it from there.",
             )
             .clicked()
         {
             self.extension_installer.activate();
+        }
+        if !capable {
+            ui.label(
+                egui::RichText::new("Unavailable: not signed for system-extension activation")
+                    .color(COLOR_DIM)
+                    .small(),
+            );
         }
         let extension_status = self.extension_installer.status();
         let extension_color = match extension_status {

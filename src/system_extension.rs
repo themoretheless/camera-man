@@ -1,10 +1,10 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-/// Bundle identifier of the embedded CoreMediaIO extension. Must match
-/// `EXTENSION_INFO_PLIST`'s `CFBundleIdentifier` in main.rs (kept as a
-/// separate literal there because that plist is a compile-time string
-/// template; the two are not derived from a single source of truth yet).
+/// Bundle identifier of the embedded CoreMediaIO extension. `main.rs` reuses
+/// this constant for the extension's `Info.plist` (`CFBundleIdentifier` and
+/// `CMIOExtensionMachServiceName`) and its `.systemextension` bundle path, so
+/// this is the single source of truth for the id.
 pub const EXTENSION_BUNDLE_ID: &str = "com.cameraman.rust.extension";
 
 /// Outcome of an `OSSystemExtensionRequest` activation, as reported

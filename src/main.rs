@@ -10,9 +10,9 @@ mod app;
 
 use camera_man::FrameSource;
 use camera_man::{
-    CameraDiscovery, CompositionLayout, Compositor, NokhwaCameraDiscovery, PipelineEngine,
-    PixelFormat, PpmSequenceSink, SyntheticFrameSource, VideoFormat, VirtualCameraConfig,
-    capture_one_with_timeout, write_ppm,
+    CameraDiscovery, CompositionLayout, Compositor, EXTENSION_BUNDLE_ID, NokhwaCameraDiscovery,
+    PipelineEngine, PixelFormat, PpmSequenceSink, SyntheticFrameSource, VideoFormat,
+    VirtualCameraConfig, capture_one_with_timeout, write_ppm,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -232,7 +232,7 @@ fn bundle_extension() -> Result<(), Box<dyn std::error::Error>> {
 fn copy_extension_into_app(contents: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     build_extension_binary()?;
     let system_extensions_dir = contents.join("Library").join("SystemExtensions");
-    let embedded = system_extensions_dir.join("com.cameraman.rust.extension.systemextension");
+    let embedded = system_extensions_dir.join(format!("{EXTENSION_BUNDLE_ID}.systemextension"));
     assemble_extension_bundle(&embedded)?;
     Ok(())
 }
@@ -274,7 +274,7 @@ fn assemble_extension_bundle(bundle: &std::path::Path) -> Result<(), Box<dyn std
     )?;
 
     let mut info = fs::File::create(contents.join("Info.plist"))?;
-    info.write_all(EXTENSION_INFO_PLIST.as_bytes())?;
+    info.write_all(extension_info_plist().as_bytes())?;
 
     let extension_entitlements = PathBuf::from("target/signing/CameraManExtension.entitlements");
     if let Some(parent) = extension_entitlements.parent() {
@@ -289,7 +289,7 @@ fn assemble_extension_bundle(bundle: &std::path::Path) -> Result<(), Box<dyn std
 }
 
 fn extension_bundle_path() -> PathBuf {
-    PathBuf::from("target/com.cameraman.rust.extension.systemextension")
+    PathBuf::from(format!("target/{EXTENSION_BUNDLE_ID}.systemextension"))
 }
 
 /// Sentinel returned by `signing_identity()` when no real identity is configured.
@@ -405,7 +405,13 @@ const APP_ENTITLEMENTS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 "#;
 
-const EXTENSION_INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+/// Built at bundle time (not a `const`) so `CFBundleIdentifier` and the CMIO
+/// mach-service name are both derived from `EXTENSION_BUNDLE_ID`, the same
+/// constant `system_extension.rs` uses to request activation, instead of
+/// duplicating the literal a third time.
+fn extension_info_plist() -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -414,7 +420,7 @@ const EXTENSION_INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <key>CFBundleExecutable</key>
   <string>CameraManExtension</string>
   <key>CFBundleIdentifier</key>
-  <string>com.cameraman.rust.extension</string>
+  <string>{EXTENSION_BUNDLE_ID}</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -428,11 +434,13 @@ const EXTENSION_INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <key>CMIOExtension</key>
   <dict>
     <key>CMIOExtensionMachServiceName</key>
-    <string>com.cameraman.rust.extension</string>
+    <string>{EXTENSION_BUNDLE_ID}</string>
   </dict>
 </dict>
 </plist>
-"#;
+"#
+    )
+}
 
 const EXTENSION_ENTITLEMENTS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

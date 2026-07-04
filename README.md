@@ -119,8 +119,11 @@ CAMERAMAN_PROVISIONING_PROFILE="/path/to/CameraMan.provisionprofile" \
 cargo run -- bundle
 ```
 
-The app exposes an `Install extension` button, but macOS will reject activation
-until signing and provisioning are correct.
+The app exposes an `Install extension` button, but it stays disabled (with an
+explanatory tooltip) unless the running bundle is both launched from an
+installed `.app` and actually signed with the `system-extension.install`
+entitlement; macOS will still reject activation itself until signing and
+provisioning are correct beyond that.
 
 ## Repository Layout
 
@@ -181,11 +184,11 @@ CameraMan should feel like a focused desktop utility:
 
 Current UI gaps:
 
-- install-extension state should explain missing entitlement/profile before the user clicks;
 - settings are not persisted;
-- the left panel is not resizable;
+- the left panel is not resizable (it now scrolls, but is still a fixed-width column);
 - the frame-spool path has no reveal/copy action;
-- visual regression checks are not automated.
+- visual regression checks are not automated;
+- an in-flight extension activation request looks identical to the idle state (both dim gray).
 
 ## Three Iterations
 

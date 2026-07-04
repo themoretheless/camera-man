@@ -514,3 +514,32 @@ Exactly 500 numbered items: done work, improvements, problems, mistakes, design 
 ## Review Summary
 
 The active code review after this rewrite should focus on signing/provisioning, stale documentation, app UI state, and unsafe extension boundaries. Keep the numbered backlog above at exactly 500 items; add future detailed review notes here without extra numbered entries.
+
+## Second Review Pass
+
+Ran a 15-agent adversarial review targeted at exactly the four areas above, plus a design-critique pass on the current egui UI (via the design-critique skill) and a direct check of this machine's signing state. Every claimed finding below was independently re-verified by a second agent reading the source directly before being accepted.
+
+Confirmed and fixed:
+
+- `extension_main.rs`: `stop_streaming` only flipped a bool; `start_streaming` could race ahead and spawn a second `stream_samples` thread before the first noticed and exited, leaving two threads sending samples to the same `CMIOExtensionStream` concurrently. Fixed by having `start_streaming` join the previous worker thread before spawning a replacement.
+- `app.rs`: a permanently broken camera in a multi-camera composite re-posted its error every tick, which reset the message's TTL every time and both blocked any other status-bar message forever and never engaged the auto-stop safety net (that only ever saw the all-cameras-failing case). Fixed with a per-source failure streak that posts once and auto-drops the camera after `MAX_CAPTURE_ERROR_STREAK`.
+- `app.rs`: if every selected real camera disappeared while running, the status bar kept showing "Preview running" in green with nothing being captured. Fixed: this path now stops the preview and posts an explicit event.
+- `main.rs` / `system_extension.rs`: the extension bundle id was still duplicated across the `Info.plist` template and the `.systemextension` path despite `architecture.md` already listing this as an open DRY violation from an earlier pass; unified behind `EXTENSION_BUNDLE_ID`.
+- `app.rs`: the "Install extension" button stayed clickable even on an ad-hoc-signed bundle where activation is guaranteed to fail. It is now gated on `extension_capable()`, which checks both that the process runs from an installed `.app` bundle and that the bundle's own entitlements (read via `codesign`) actually grant `system-extension.install`.
+- `app.rs`: the control column had no scroll area, so the Output/System Extension controls were clipped at the bottom even at the default window size. Wrapped in `egui::ScrollArea::vertical()`.
+- `app.rs`: the install-extension button and status shared no visual grouping with the section above it. Gave it its own "System Extension" label and separator.
+- `architecture.md`: test count claimed 20, actual is 22; bundle-id duplication claimed as an open "Still open" item after it had already been fixed elsewhere in this same pass; Module Map for `system_extension.rs` omitted the `EXTENSION_BUNDLE_ID` constant; the install-extension-button design issue described the pre-fix behavior. All corrected.
+- `README.md`: the install-extension-button description and "Current UI gaps" list described the pre-fix behavior. Corrected.
+
+Checked and confirmed NOT a bug (no action taken):
+
+- `extension_main.rs`'s `stream_samples` divides by the frame-spool-reported fps; verified the value is always clamped to at least 1 both where it's parsed (`frame_transport.rs`) and where it's read (`FrameSpoolReader::poll`), so no division-by-zero path exists.
+- The frame-spool's temp-file-then-rename write strategy was verified race-safe against the extension's concurrent reads: POSIX rename is atomic, so a reader only ever sees a complete pre- or post-rename file, never a torn one.
+
+Still open (see architecture.md's per-iteration "Still open" lists for the full picture):
+
+- A real camera whose `open()` call itself hangs is indistinguishable from one merely warming up, so it never counts toward any failure streak. Needs a bounded, generous open-timeout in the capture worker.
+- `ExtensionActivationStatus::Requesting` and `Idle` render identically (both dim gray), so an in-flight activation request gives no visual feedback that anything is happening.
+- Fixed fps mode gives no feedback when the chosen rate exceeds what the camera can actually deliver.
+- Client authorization in the CMIO extension is logged but not actually enforced (any local process can still connect).
+- Real system-extension install still needs a paid Apple Developer Program membership with the System Extension capability; the free personal-team certificate now present on this machine (`Apple Development: d.o.mezhov@gmail.com`, team `VBA8KCMNX7`) can sign a plain app but cannot carry that capability.

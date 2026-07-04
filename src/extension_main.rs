@@ -3,7 +3,7 @@ mod macos_extension {
     use std::path::PathBuf;
     use std::ptr::NonNull;
     use std::sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicPtr, Ordering},
     };
     use std::thread;
@@ -61,6 +61,12 @@ mod macos_extension {
     struct StreamSourceIvars {
         stream: AtomicPtr<CMIOExtensionStream>,
         streaming: Arc<AtomicBool>,
+        /// The currently running `stream_samples` thread, if any. `start_streaming`
+        /// joins this before spawning a replacement so a stop immediately followed
+        /// by a start (e.g. a client reconnect) can never leave two threads
+        /// calling `sendSampleBuffer_discontinuity_hostTimeInNanoseconds` on the
+        /// same `CMIOExtensionStream` at once.
+        worker: Mutex<Option<thread::JoinHandle<()>>>,
     }
 
     impl Default for StreamSourceIvars {
@@ -68,6 +74,7 @@ mod macos_extension {
             Self {
                 stream: AtomicPtr::new(std::ptr::null_mut()),
                 streaming: Arc::new(AtomicBool::new(false)),
+                worker: Mutex::new(None),
             }
         }
     }
@@ -281,6 +288,20 @@ mod macos_extension {
                 return;
             }
 
+            // A previous stop_streaming() only flips the flag; the old
+            // stream_samples thread notices and exits on its own schedule
+            // (up to one frame period later). Join it now, before spawning a
+            // replacement, so the two threads can never overlap.
+            let previous = self
+                .ivars()
+                .worker
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            if let Some(previous) = previous {
+                let _ = previous.join();
+            }
+
             let raw_stream = self.ivars().stream.load(Ordering::SeqCst);
             if raw_stream.is_null() {
                 eprintln!("CameraMan stream start requested before stream was attached.");
@@ -290,7 +311,12 @@ mod macos_extension {
 
             let handle = StreamHandle(raw_stream as usize);
             let streaming = Arc::clone(&self.ivars().streaming);
-            thread::spawn(move || stream_samples(handle, streaming));
+            let worker = thread::spawn(move || stream_samples(handle, streaming));
+            *self
+                .ivars()
+                .worker
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(worker);
         }
 
         fn stop_streaming(&self) {

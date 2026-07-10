@@ -127,7 +127,7 @@ Exactly 500 numbered items: done work, improvements, problems, mistakes, design 
 121. Проблема: `VirtualCameraConfig` UID продублирован в extension constants.
 122. Улучшение: вынести shared constants в library.
 123. Проблема: `EXTENSION_BUNDLE_ID` дублируется в коде.
-124. Улучшение: иметь single source of truth for bundle ids.
+124. Сделано: app and extension bundle ids now each have a single source of truth.
 125. Проблема: Info.plist создаётся string literal.
 126. Улучшение: template builder снизит риск typo.
 127. Улучшение: проверить plist через `plutil` в tests/scripts.
@@ -192,9 +192,9 @@ Exactly 500 numbered items: done work, improvements, problems, mistakes, design 
 183. Сделано: render cadence follows active fps.
 184. Сделано: virtual sink stores target fps in transport header.
 185. Сделано: extension can adapt cadence from transport fps.
-186. Проблема: install button is visible even when entitlement/profile is missing.
-187. Улучшение: preflight entitlement before enabling install button.
-188. Улучшение: show signing state in UI.
+186. Сделано: install button is disabled when entitlement/profile preflight fails.
+187. Сделано: preflight parses the signed app entitlement plist before enabling install.
+188. Сделано частично: UI shows whether system-extension signing is usable, but not the Team ID yet.
 189. Улучшение: show provisioning-profile state in UI.
 190. Улучшение: link status to troubleshooting docs.
 191. Проблема: app settings are not persisted.
@@ -314,15 +314,15 @@ Exactly 500 numbered items: done work, improvements, problems, mistakes, design 
 305. Улучшение: backup existing install before replace.
 306. Проблема: current UI does not show Team ID.
 307. Улучшение: show signing identity in diagnostics.
-308. Проблема: no provisioning profile parser.
-309. Улучшение: parse embedded profile to confirm entitlement.
+308. Сделано: provisioning profile parser/validator added to the bundler.
+309. Сделано: profile validation confirms the system-extension entitlement before embedding.
 310. Проблема: Xcode-managed signing is outside current CLI.
 311. Улучшение: document manual signing path.
-312. Проблема: user can click Install repeatedly.
-313. Улучшение: disable while Requesting.
+312. Сделано: Install cannot be clicked repeatedly while activation is in progress.
+313. Сделано: activation button is disabled while Requesting or awaiting approval.
 314. Сделано: delegate/request are retained while installer lives.
-315. Проблема: repeated activation replaces active request.
-316. Улучшение: explicitly cancel or reject duplicate activation.
+315. Сделано: repeated activation no longer replaces the active request.
+316. Сделано: `ExtensionInstaller` rejects duplicate activation requests by state.
 317. Проблема: delegate queue is main dispatch queue.
 318. Улучшение: evaluate serial queue for CLI diagnose/install.
 319. Проблема: activation status is not persisted.
@@ -412,8 +412,8 @@ Exactly 500 numbered items: done work, improvements, problems, mistakes, design 
 400. Сделано: bundler leaves restricted entitlement out when no profile is provided.
 401. Сделано: bundler no longer creates an unlaunchable entitlement-bearing app from identity alone.
 402. Сделано: added `CAMERAMAN_PROVISIONING_PROFILE` / `PROVISIONING_PROFILE` env support.
-403. Улучшение: verify profile contains bundle id.
-404. Улучшение: verify profile contains system-extension entitlement.
+403. Сделано: verify profile contains bundle id.
+404. Сделано: verify profile contains system-extension entitlement.
 405. Улучшение: verify Team ID matches signing identity.
 406. Проблема: extension entitlements may need more than sandbox for production.
 407. Улучшение: audit CMIO extension entitlement requirements.
@@ -509,7 +509,7 @@ Exactly 500 numbered items: done work, improvements, problems, mistakes, design 
 497. Проблема: no owner notes for risky files.
 498. Улучшение: add comments in architecture for `extension_main.rs`.
 499. Проблема: production virtual camera is blocked by signing/provisioning.
-500. Следующий шаг: validate provisioning profile contents and disable impossible install states.
+500. Сделано: validate provisioning profile contents and disable impossible install states.
 
 ## Review Summary
 
@@ -536,10 +536,22 @@ Checked and confirmed NOT a bug (no action taken):
 - `extension_main.rs`'s `stream_samples` divides by the frame-spool-reported fps; verified the value is always clamped to at least 1 both where it's parsed (`frame_transport.rs`) and where it's read (`FrameSpoolReader::poll`), so no division-by-zero path exists.
 - The frame-spool's temp-file-then-rename write strategy was verified race-safe against the extension's concurrent reads: POSIX rename is atomic, so a reader only ever sees a complete pre- or post-rename file, never a torn one.
 
+Fixed in the final publication pass:
+
+- Fixed: `Requesting` now has an accent status, spinner, and disabled state-aware button instead of looking identical to idle.
+- Fixed: fixed fps mode warns when the target exceeds the slowest negotiated camera rate and frames may repeat.
+- Fixed: provisioning and signed-entitlement checks now use a structured plist parser instead of raw substring matching.
+- Fixed: app plist templates now consume shared app-id and entitlement constants, closing another DRY gap.
+
 Still open (see architecture.md's per-iteration "Still open" lists for the full picture):
 
 - A real camera whose `open()` call itself hangs is indistinguishable from one merely warming up, so it never counts toward any failure streak. Needs a bounded, generous open-timeout in the capture worker.
-- `ExtensionActivationStatus::Requesting` and `Idle` render identically (both dim gray), so an in-flight activation request gives no visual feedback that anything is happening.
-- Fixed fps mode gives no feedback when the chosen rate exceeds what the camera can actually deliver.
 - Client authorization in the CMIO extension is logged but not actually enforced (any local process can still connect).
-- Real system-extension install still needs a paid Apple Developer Program membership with the System Extension capability; the free personal-team certificate now present on this machine (`Apple Development: d.o.mezhov@gmail.com`, team `VBA8KCMNX7`) can sign a plain app but cannot carry that capability.
+- Real system-extension install still needs a paid Apple Developer Program membership with the System Extension capability; the free personal-team certificate now present on this machine (`Apple Development: d.o.mezhov@gmail.com`, team `VBA8KCMNX7`) can sign a plain app but cannot carry that capability. Next hardening step: validate Team ID/certificate/profile matching, not just the app id and entitlement.
+
+## Third Review Pass
+
+- Exactly 500 numbered items remain in this file.
+- `cargo fmt --all --check`, strict Clippy, and all 31 tests pass.
+- App and extension bundles build, pass strict code-sign verification, and contain valid plist files.
+- Automated window capture is still pending because macOS denied Screen Recording permission to the test process; the native app itself launched.

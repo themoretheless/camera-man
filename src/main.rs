@@ -7,6 +7,10 @@ use std::process::Command;
 use std::time::Duration;
 
 mod app;
+mod provisioning;
+
+const APP_BUNDLE_ID: &str = "com.cameraman.rust";
+const SYSTEM_EXTENSION_INSTALL_ENTITLEMENT: &str = "com.apple.developer.system-extension.install";
 
 use camera_man::FrameSource;
 use camera_man::{
@@ -165,7 +169,7 @@ fn bundle_app() -> Result<(), Box<dyn std::error::Error>> {
     copy_extension_into_app(&contents)?;
 
     let mut info = fs::File::create(contents.join("Info.plist"))?;
-    info.write_all(INFO_PLIST.as_bytes())?;
+    info.write_all(app_info_plist().as_bytes())?;
 
     let mut pkg_info = fs::File::create(contents.join("PkgInfo"))?;
     pkg_info.write_all(b"APPL????")?;
@@ -185,8 +189,16 @@ fn bundle_app() -> Result<(), Box<dyn std::error::Error>> {
              but system-extension activation needs real signing and provisioning."
         );
     } else if let Some(profile) = provisioning_profile() {
-        fs::copy(&profile, contents.join("embedded.provisionprofile"))?;
-        eprintln!("Embedded provisioning profile: {}", profile.display());
+        let profile = provisioning::validate(
+            &profile,
+            APP_BUNDLE_ID,
+            SYSTEM_EXTENSION_INSTALL_ENTITLEMENT,
+        )?;
+        fs::copy(profile.path(), contents.join("embedded.provisionprofile"))?;
+        eprintln!(
+            "Embedded provisioning profile: {}",
+            profile.path().display()
+        );
 
         let app_entitlements = write_app_entitlements()?;
         sign_path_with_entitlements(&bundle, &app_entitlements);
@@ -217,7 +229,7 @@ fn write_app_entitlements() -> Result<PathBuf, Box<dyn std::error::Error>> {
         fs::create_dir_all(parent)?;
     }
     let mut entitlements = fs::File::create(&app_entitlements)?;
-    entitlements.write_all(APP_ENTITLEMENTS.as_bytes())?;
+    entitlements.write_all(app_entitlements_plist().as_bytes())?;
     Ok(app_entitlements)
 }
 
@@ -361,7 +373,9 @@ fn print_help() {
     println!("  help                   Print this help");
 }
 
-const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+fn app_info_plist() -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -372,7 +386,7 @@ const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <key>CFBundleExecutable</key>
   <string>CameraMan</string>
   <key>CFBundleIdentifier</key>
-  <string>com.cameraman.rust</string>
+  <string>{APP_BUNDLE_ID}</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -393,17 +407,23 @@ const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <true/>
 </dict>
 </plist>
-"#;
+"#
+    )
+}
 
-const APP_ENTITLEMENTS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+fn app_entitlements_plist() -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>com.apple.developer.system-extension.install</key>
+  <key>{SYSTEM_EXTENSION_INSTALL_ENTITLEMENT}</key>
   <true/>
 </dict>
 </plist>
-"#;
+"#
+    )
+}
 
 /// Built at bundle time (not a `const`) so `CFBundleIdentifier` and the CMIO
 /// mach-service name are both derived from `EXTENSION_BUNDLE_ID`, the same
@@ -451,3 +471,23 @@ const EXTENSION_ENTITLEMENTS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 </dict>
 </plist>
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_app_plists_use_shared_constants() {
+        let info = plist::Value::from_reader_xml(app_info_plist().as_bytes()).unwrap();
+        let bundle_id = info
+            .as_dictionary()
+            .and_then(|dictionary| dictionary.get("CFBundleIdentifier"))
+            .and_then(plist::Value::as_string);
+        assert_eq!(bundle_id, Some(APP_BUNDLE_ID));
+
+        assert!(provisioning::decoded_entitlements_grant(
+            app_entitlements_plist().as_bytes(),
+            SYSTEM_EXTENSION_INSTALL_ENTITLEMENT,
+        ));
+    }
+}

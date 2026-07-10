@@ -19,6 +19,7 @@ path = "src/extension_main.rs"
 [dependencies]
 eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "glow"] }
 nokhwa = { version = "0.10.11", default-features = false, features = ["decoding", "input-native"] }
+plist = "1.8.0"
 objc2 = "0.6.4"
 objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"

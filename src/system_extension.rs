@@ -82,10 +82,17 @@ impl ExtensionInstaller {
             .clone()
     }
 
-    /// Submits (or re-submits) the activation request. Safe to call again
-    /// after a failure to retry; macOS treats a repeat request for an
-    /// already-active extension as a fast no-op success.
+    pub fn can_activate(&self) -> bool {
+        activation_request_allowed(&self.status())
+    }
+
+    /// Submits the activation request. A failed request can be retried;
+    /// in-progress, approval-pending, active, and reboot-pending requests are
+    /// ignored so the retained request cannot be replaced prematurely.
     pub fn activate(&mut self) {
+        if !self.can_activate() {
+            return;
+        }
         self.set_status(ExtensionActivationStatus::Requesting);
         self.activate_platform();
     }
@@ -108,6 +115,38 @@ impl ExtensionInstaller {
         self.set_status(ExtensionActivationStatus::Failed(String::from(
             "system-extension activation is only implemented on macOS",
         )));
+    }
+}
+
+fn activation_request_allowed(status: &ExtensionActivationStatus) -> bool {
+    matches!(
+        status,
+        ExtensionActivationStatus::Idle | ExtensionActivationStatus::Failed(_)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_idle_and_failed_states_allow_an_activation_request() {
+        assert!(activation_request_allowed(&ExtensionActivationStatus::Idle));
+        assert!(activation_request_allowed(
+            &ExtensionActivationStatus::Failed(String::from("retryable"))
+        ));
+        assert!(!activation_request_allowed(
+            &ExtensionActivationStatus::Requesting
+        ));
+        assert!(!activation_request_allowed(
+            &ExtensionActivationStatus::NeedsApproval
+        ));
+        assert!(!activation_request_allowed(
+            &ExtensionActivationStatus::Activated
+        ));
+        assert!(!activation_request_allowed(
+            &ExtensionActivationStatus::WillCompleteAfterReboot
+        ));
     }
 }
 

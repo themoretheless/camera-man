@@ -24,7 +24,7 @@ What works:
 What is still development-only:
 
 - The default app bundle is ad-hoc signed, so it launches but cannot install a system extension.
-- A real install requires a provisioning profile that grants `com.apple.developer.system-extension.install`.
+- A real install requires a provisioning profile that grants `com.apple.developer.system-extension.install`; the bundler validates that profile before embedding it.
 - The frame spool is a file-based dev bridge, not a production IPC design.
 - The extension still has unsafe CoreMediaIO/Objective-C boundaries that need hardening.
 
@@ -90,6 +90,11 @@ src/system_extension.rs
   ExtensionInstaller
   ExtensionActivationStatus
   OSSystemExtensionRequest delegate bridge
+
+src/provisioning.rs
+  provisioning-profile CMS decode
+  structured plist validation
+  app-id and entitlement checks
 
 src/app.rs
   egui desktop app
@@ -212,6 +217,8 @@ Keep one source of truth for:
 - frame validation: `Frame::new_checked`;
 - layout cell math: `GridLayoutCalculator`;
 - transport path and header format: `frame_transport.rs`;
+- app bundle id and install entitlement: `APP_BUNDLE_ID` and
+  `SYSTEM_EXTENSION_INSTALL_ENTITLEMENT`, reused by generated plist content;
 - extension bundle id: `system_extension::EXTENSION_BUNDLE_ID`, reused by `main.rs`
   for the extension's `Info.plist` and `.systemextension` bundle path.
 
@@ -236,9 +243,10 @@ Read the project in small pieces:
 7. `src/pipeline.rs`
 8. `src/capture.rs`
 9. `src/system_extension.rs`
-10. `src/app.rs`
-11. `src/extension_main.rs`
-12. `src/main.rs`
+10. `src/provisioning.rs`
+11. `src/app.rs`
+12. `src/extension_main.rs`
+13. `src/main.rs`
 
 This order starts with pure data and ends with platform integration.
 
@@ -263,12 +271,6 @@ Current design issues:
 - A stale preview can remain while switching source modes.
 - The app does not persist selected layout, fps, sources, or export path.
 - The frame-spool path is shown as monospace text but has no copy/reveal action.
-- `ExtensionActivationStatus::Requesting` and `Idle` share the same dim color,
-  so there is no visual feedback that an async activation request is actually
-  in flight versus nothing having happened yet.
-- Fixed fps mode gives no feedback when the chosen rate exceeds what the
-  camera can actually deliver (Auto mode's caption is the only place that
-  surfaces a negotiated rate).
 
 Fixed in this pass:
 
@@ -285,6 +287,11 @@ Fixed in this pass:
   Install extension button) was clipped with no way to reach it, even at the
   default window size, not just near `with_min_inner_size`. It now wraps in
   `egui::ScrollArea::vertical()`.
+- `Requesting` looked identical to idle and allowed another activation click.
+  It now uses an accent status with a spinner, while the state-aware button
+  rejects duplicate requests until activation finishes.
+- Fixed fps could silently exceed a negotiated camera rate. The controls now
+  show a warning when the target is above the slowest selected camera.
 
 ## Three Iterations
 
@@ -391,7 +398,7 @@ Recent review result:
 - `cargo test` passed with 20 tests before this documentation pass.
 - `cargo run -- bundle` creates `target/CameraMan.app`.
 - Ad-hoc `CameraMan.app` launches but cannot install the extension.
-- Apple Development signing without a matching provisioning profile was verified to trigger `No matching profile found`; the bundler now avoids embedding the restricted entitlement unless a profile path is provided.
+- Apple Development signing without a matching provisioning profile was verified to trigger `No matching profile found`; the bundler now avoids embedding the restricted entitlement unless a profile path is provided, and validates that supplied profile's app id and system-extension entitlement.
 
 Second review pass (after the above):
 
@@ -418,11 +425,28 @@ Second review pass (after the above):
   Target FPS, Install extension button/status) found the control-column
   overflow, the ungrouped extension section, and the always-enabled install
   button described under "Current design issues" and "Fixed in this pass"
-  above; the first three were fixed, two remain open.
+  above. A final pass also fixed the two remaining state-feedback issues.
+
+Third review pass (final publication pass):
+
+- Provisioning validation moved out of `main.rs` into `provisioning.rs` and now
+  parses plist values structurally instead of searching raw XML strings.
+- App bundle id and install-entitlement values now generate the app plist and
+  entitlement plist from shared constants; a regression test enforces this.
+- The activation API rejects duplicate requests, while the UI shows a spinner,
+  state-aware button label, and distinct requesting color.
+- Fixed fps mode warns when its target exceeds the slowest negotiated camera.
+- `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`, and
+  `cargo test --all-targets` pass; the final suite has 31 tests.
+- `cargo run -- bundle-extension` and `cargo run -- bundle` pass. Both bundles
+  satisfy strict `codesign` verification, both generated `Info.plist` files
+  pass `plutil -lint`, and the binary inside `CameraMan.app` runs `status`.
+- Automated UI capture remains open because macOS denied Screen Recording to
+  the test process; the app window itself launched successfully.
 
 High-priority fixes next:
 
-- Add deeper provisioning-profile validation.
+- Add Team ID and certificate/profile matching diagnostics.
 - Replace file spool with app-group/shared-memory IPC.
 - Add integration smoke tests for bundle entitlements.
 - Add visual app screenshot checks for the egui UI.

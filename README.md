@@ -18,7 +18,7 @@ extension prototype.
 - The extension generates placeholder frames when the app has not published a frame yet.
 - The app can request system-extension activation and show the activation status.
 - The CLI can build `target/CameraMan.app` and embed the `.systemextension`.
-- Unit tests cover frame validation, layout, rendering, PPM output, pipeline behavior, capture classification, and frame transport.
+- 31 tests cover frame validation, layout, rendering, PPM output, pipeline behavior, capture classification, frame transport, activation-state guards, and provisioning validation.
 
 ## Important Limits
 
@@ -111,6 +111,10 @@ For a real system-extension install, the app must be:
 - granted `com.apple.developer.system-extension.install`;
 - approved by the user in System Settings after activation is requested.
 
+`cargo run -- bundle` validates the supplied provisioning profile before it
+embeds it: the profile must decode with `security cms`, match
+`com.cameraman.rust`, and grant `com.apple.developer.system-extension.install`.
+
 Build with explicit signing inputs:
 
 ```bash
@@ -143,6 +147,7 @@ src/frame_transport.rs  file-based frame-spool bridge
 src/pipeline.rs         source -> compose -> sink orchestration
 src/ppm.rs              PPM writer and PPM sequence sink
 src/system_extension.rs OSSystemExtensionRequest activation bridge
+src/provisioning.rs     structured provisioning-profile validation
 src/extension_main.rs   Rust CoreMediaIO provider/device/stream process
 
 architecture.md         architecture, SOLID/DRY split, design notes, 3 iterations
@@ -188,7 +193,7 @@ Current UI gaps:
 - the left panel is not resizable (it now scrolls, but is still a fixed-width column);
 - the frame-spool path has no reveal/copy action;
 - visual regression checks are not automated;
-- an in-flight extension activation request looks identical to the idle state (both dim gray).
+- signing diagnostics show capability but do not expose the certificate Team ID yet.
 
 ## Three Iterations
 

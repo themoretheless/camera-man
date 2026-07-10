@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::{SYSTEM_EXTENSION_INSTALL_ENTITLEMENT, provisioning};
 use camera_man::FrameSource;
 use camera_man::{
     CameraDevice, CameraDiscovery, CapturedFrame, CompositionLayout, Compositor,
@@ -293,6 +294,22 @@ impl CameraManApp {
     /// constant, so it always reflects the current Auto/Fixed choice.
     fn frame_interval(&self) -> Duration {
         Duration::from_nanos(1_000_000_000 / u64::from(self.active_fps.max(1)))
+    }
+
+    fn fixed_fps_warning(&self) -> Option<String> {
+        let FpsMode::Fixed(target_fps) = self.fps_mode else {
+            return None;
+        };
+        let slowest_camera_fps = self
+            .real_sources
+            .iter()
+            .filter_map(|(_, source, _)| source.negotiated_fps())
+            .min()?;
+        (target_fps > slowest_camera_fps).then(|| {
+            format!(
+                "Target is above the slowest camera ({slowest_camera_fps} fps); frames may repeat"
+            )
+        })
     }
 
     fn render_preview(&mut self, ctx: &egui::Context, allow_open_camera: bool) {
@@ -710,8 +727,11 @@ fn extension_capable() -> bool {
         .arg(&bundle)
         .output()
         .is_ok_and(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .contains("com.apple.developer.system-extension.install")
+            output.status.success()
+                && provisioning::decoded_entitlements_grant(
+                    &output.stdout,
+                    SYSTEM_EXTENSION_INSTALL_ENTITLEMENT,
+                )
         })
 }
 
@@ -857,6 +877,8 @@ impl CameraManApp {
                 .color(COLOR_DIM)
                 .small(),
             );
+        } else if let Some(warning) = self.fixed_fps_warning() {
+            ui.label(egui::RichText::new(warning).color(COLOR_WARNING).small());
         }
 
         ui.add_space(16.0);
@@ -945,20 +967,32 @@ impl CameraManApp {
         ui.add_space(12.0);
         ui.label("System Extension");
         let capable = self.extension_capable;
+        let extension_status = self.extension_installer.status();
+        let can_request = capable && self.extension_installer.can_activate();
+        let button_label = match extension_status {
+            ExtensionActivationStatus::Idle => "Install extension",
+            ExtensionActivationStatus::Requesting => "Requesting...",
+            ExtensionActivationStatus::NeedsApproval => "Awaiting approval",
+            ExtensionActivationStatus::Activated => "Installed",
+            ExtensionActivationStatus::WillCompleteAfterReboot => "Restart required",
+            ExtensionActivationStatus::Failed(_) => "Retry activation",
+        };
         if ui
-            .add_enabled_ui(capable, |ui| {
-                ui.add_sized([190.0, 30.0], egui::Button::new("Install extension"))
+            .add_enabled_ui(can_request, |ui| {
+                ui.add_sized([190.0, 30.0], egui::Button::new(button_label))
             })
             .inner
             .on_hover_text(
                 "Requests macOS activation of the CameraMan Virtual Camera system extension.",
             )
-            .on_disabled_hover_text(
+            .on_disabled_hover_text(if !capable {
                 "Only works when the app is signed with the system-extension.install entitlement \
                  and launched from an installed /Applications bundle. Build with CODESIGN_IDENTITY \
                  and CAMERAMAN_PROVISIONING_PROFILE set, then `cargo run -- bundle`, copy \
-                 target/CameraMan.app to /Applications, and launch it from there.",
-            )
+                 target/CameraMan.app to /Applications, and launch it from there."
+            } else {
+                "The current activation request must finish before another request can start."
+            })
             .clicked()
         {
             self.extension_installer.activate();
@@ -970,19 +1004,24 @@ impl CameraManApp {
                     .small(),
             );
         }
-        let extension_status = self.extension_installer.status();
         let extension_color = match extension_status {
             ExtensionActivationStatus::Activated
             | ExtensionActivationStatus::WillCompleteAfterReboot => COLOR_OK,
             ExtensionActivationStatus::NeedsApproval => COLOR_WARNING,
             ExtensionActivationStatus::Failed(_) => COLOR_ERROR,
-            ExtensionActivationStatus::Idle | ExtensionActivationStatus::Requesting => COLOR_DIM,
+            ExtensionActivationStatus::Requesting => COLOR_ACCENT,
+            ExtensionActivationStatus::Idle => COLOR_DIM,
         };
-        ui.label(
-            egui::RichText::new(extension_status.to_string())
-                .color(extension_color)
-                .small(),
-        );
+        ui.horizontal(|ui| {
+            if extension_status == ExtensionActivationStatus::Requesting {
+                ui.add(egui::Spinner::new().size(12.0));
+            }
+            ui.label(
+                egui::RichText::new(extension_status.to_string())
+                    .color(extension_color)
+                    .small(),
+            );
+        });
     }
 
     fn preview_ui(&self, ui: &mut egui::Ui) {

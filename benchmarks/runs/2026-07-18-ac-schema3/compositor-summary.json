@@ -1,0 +1,574 @@
+{
+  "schema_version": 1,
+  "source_reports": [
+    "/Users/themoretheless/Documents/Sources/camera-man/benchmarks/runs/2026-07-18-ac-schema3/compositor-run-01.json",
+    "/Users/themoretheless/Documents/Sources/camera-man/benchmarks/runs/2026-07-18-ac-schema3/compositor-run-02.json",
+    "/Users/themoretheless/Documents/Sources/camera-man/benchmarks/runs/2026-07-18-ac-schema3/compositor-run-03.json"
+  ],
+  "hardware": "aarch64 | Apple M4 Max",
+  "target_arch": "aarch64",
+  "fixture_profile": "synthetic-solid-v1",
+  "power_source": "AC Power",
+  "process_runs": 3,
+  "bootstrap_resamples": 10000,
+  "confidence_level": 0.95,
+  "comparable_to_baseline": true,
+  "warnings": [
+    "baseline is a fixed point estimate; ratio intervals include current process variation only"
+  ],
+  "results": [
+    {
+      "case_id": "1080p_1_grid_bilinear",
+      "process_average_ms": [
+        5.456876680000001,
+        5.4631403800000005,
+        5.4638354300000005
+      ],
+      "mean_average_ms": 5.461284163333334,
+      "mean_average_ms_ci95": {
+        "low": 5.456876680000001,
+        "high": 5.4638354300000005
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_1_grid_nearest",
+      "process_average_ms": [
+        0.7500237599999999,
+        0.7490603499999999,
+        0.78557051
+      ],
+      "mean_average_ms": 0.76155154,
+      "mean_average_ms_ci95": {
+        "low": 0.74906035,
+        "high": 0.78557051
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_1_pip_bilinear",
+      "process_average_ms": [
+        5.4443120899999995,
+        5.43935834,
+        5.44439041
+      ],
+      "mean_average_ms": 5.442686946666666,
+      "mean_average_ms_ci95": {
+        "low": 5.439358340000001,
+        "high": 5.44439041
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_1_pip_nearest",
+      "process_average_ms": [
+        0.74886959,
+        0.7499767100000001,
+        0.76063797
+      ],
+      "mean_average_ms": 0.7531614233333334,
+      "mean_average_ms_ci95": {
+        "low": 0.74886959,
+        "high": 0.76063797
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_2_grid_bilinear",
+      "process_average_ms": [
+        5.17710631,
+        5.180145019999999,
+        5.16423206
+      ],
+      "mean_average_ms": 5.173827796666667,
+      "mean_average_ms_ci95": {
+        "low": 5.16423206,
+        "high": 5.180145019999999
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_2_grid_nearest",
+      "process_average_ms": [
+        1.0018746,
+        0.97732376,
+        0.97222456
+      ],
+      "mean_average_ms": 0.9838076400000001,
+      "mean_average_ms_ci95": {
+        "low": 0.97222456,
+        "high": 1.0018746
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_2_pip_bilinear",
+      "process_average_ms": [
+        5.783787070000001,
+        5.78488374,
+        5.83599501
+      ],
+      "mean_average_ms": 5.801555273333334,
+      "mean_average_ms_ci95": {
+        "low": 5.78378707,
+        "high": 5.83599501
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_2_pip_nearest",
+      "process_average_ms": [
+        0.8197463100000001,
+        0.81809542,
+        0.8207074799999999
+      ],
+      "mean_average_ms": 0.8195164033333334,
+      "mean_average_ms_ci95": {
+        "low": 0.81809542,
+        "high": 0.8207074799999999
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_4_grid_bilinear",
+      "process_average_ms": [
+        5.737187860000001,
+        5.75982711,
+        5.73523627
+      ],
+      "mean_average_ms": 5.744083746666667,
+      "mean_average_ms_ci95": {
+        "low": 5.735236269999999,
+        "high": 5.75982711
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_4_grid_nearest",
+      "process_average_ms": [
+        1.03232418,
+        1.03728708,
+        1.03752665
+      ],
+      "mean_average_ms": 1.035712636666667,
+      "mean_average_ms_ci95": {
+        "low": 1.03232418,
+        "high": 1.03752665
+      },
+      "baseline_average_ms": 1.018,
+      "ratio_to_fixed_baseline": 1.0173994466273741,
+      "ratio_to_fixed_baseline_ci95": {
+        "low": 1.0140709037328095,
+        "high": 1.0191813850687623
+      },
+      "decision": "no_significant_change"
+    },
+    {
+      "case_id": "1080p_4_pip_bilinear",
+      "process_average_ms": [
+        6.50576333,
+        6.51929584,
+        6.5215046
+      ],
+      "mean_average_ms": 6.515521256666666,
+      "mean_average_ms_ci95": {
+        "low": 6.50576333,
+        "high": 6.5215046
+      },
+      "baseline_average_ms": 6.686,
+      "ratio_to_fixed_baseline": 0.9745021323162827,
+      "ratio_to_fixed_baseline_ci95": {
+        "low": 0.973042675740353,
+        "high": 0.9753970385880946
+      },
+      "decision": "improvement"
+    },
+    {
+      "case_id": "1080p_4_pip_nearest",
+      "process_average_ms": [
+        0.8942250500000001,
+        0.91266375,
+        0.9403275
+      ],
+      "mean_average_ms": 0.9157387666666666,
+      "mean_average_ms_ci95": {
+        "low": 0.8942250500000001,
+        "high": 0.9403275
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_8_grid_bilinear",
+      "process_average_ms": [
+        5.05524334,
+        4.98033998,
+        4.97850207
+      ],
+      "mean_average_ms": 5.004695130000001,
+      "mean_average_ms_ci95": {
+        "low": 4.97850207,
+        "high": 5.05524334
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_8_grid_nearest",
+      "process_average_ms": [
+        0.76410207,
+        0.7790245899999999,
+        0.7497883399999999
+      ],
+      "mean_average_ms": 0.7643049999999999,
+      "mean_average_ms_ci95": {
+        "low": 0.7497883399999999,
+        "high": 0.77902459
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_8_pip_bilinear",
+      "process_average_ms": [
+        6.2569516300000005,
+        6.28254384,
+        6.283420410000001
+      ],
+      "mean_average_ms": 6.274305293333334,
+      "mean_average_ms_ci95": {
+        "low": 6.2569516300000005,
+        "high": 6.283420410000001
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "1080p_8_pip_nearest",
+      "process_average_ms": [
+        0.87872495,
+        0.89307541,
+        0.92376084
+      ],
+      "mean_average_ms": 0.8985203999999999,
+      "mean_average_ms_ci95": {
+        "low": 0.87872495,
+        "high": 0.92376084
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_1_grid_bilinear",
+      "process_average_ms": [
+        2.42159046,
+        2.42254751,
+        2.45363291
+      ],
+      "mean_average_ms": 2.4325902933333334,
+      "mean_average_ms_ci95": {
+        "low": 2.42159046,
+        "high": 2.45363291
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_1_grid_nearest",
+      "process_average_ms": [
+        0.35496294999999994,
+        0.34832372,
+        0.36258755
+      ],
+      "mean_average_ms": 0.35529140666666664,
+      "mean_average_ms_ci95": {
+        "low": 0.34832372,
+        "high": 0.36258755
+      },
+      "baseline_average_ms": 0.368,
+      "ratio_to_fixed_baseline": 0.9654657789855072,
+      "ratio_to_fixed_baseline_ci95": {
+        "low": 0.946531847826087,
+        "high": 0.9852922554347826
+      },
+      "decision": "improvement"
+    },
+    {
+      "case_id": "720p_1_pip_bilinear",
+      "process_average_ms": [
+        2.41807377,
+        2.42378959,
+        2.4240225000000004
+      ],
+      "mean_average_ms": 2.421961953333333,
+      "mean_average_ms_ci95": {
+        "low": 2.41807377,
+        "high": 2.4240225000000004
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_1_pip_nearest",
+      "process_average_ms": [
+        0.34482253,
+        0.35594204999999995,
+        0.35099252
+      ],
+      "mean_average_ms": 0.35058569999999994,
+      "mean_average_ms_ci95": {
+        "low": 0.34482253,
+        "high": 0.35594204999999995
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_2_grid_bilinear",
+      "process_average_ms": [
+        0.13930458999999998,
+        0.14162912,
+        0.14198835
+      ],
+      "mean_average_ms": 0.14097402,
+      "mean_average_ms_ci95": {
+        "low": 0.13930458999999998,
+        "high": 0.14198835
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_2_grid_nearest",
+      "process_average_ms": [
+        0.13961879,
+        0.14237206000000002,
+        0.14255499
+      ],
+      "mean_average_ms": 0.14151528,
+      "mean_average_ms_ci95": {
+        "low": 0.13961879,
+        "high": 0.14255499
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_2_pip_bilinear",
+      "process_average_ms": [
+        2.58048705,
+        2.5794045999999997,
+        2.5755520599999997
+      ],
+      "mean_average_ms": 2.5784812366666663,
+      "mean_average_ms_ci95": {
+        "low": 2.5755520599999997,
+        "high": 2.58048705
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_2_pip_nearest",
+      "process_average_ms": [
+        0.36818170999999994,
+        0.36686499999999994,
+        0.3695479
+      ],
+      "mean_average_ms": 0.3681982033333333,
+      "mean_average_ms_ci95": {
+        "low": 0.36686499999999994,
+        "high": 0.3695479
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_4_grid_bilinear",
+      "process_average_ms": [
+        2.46783332,
+        2.46024787,
+        2.50701044
+      ],
+      "mean_average_ms": 2.4783638766666667,
+      "mean_average_ms_ci95": {
+        "low": 2.46024787,
+        "high": 2.50701044
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_4_grid_nearest",
+      "process_average_ms": [
+        0.37121924,
+        0.36594167,
+        0.36603004
+      ],
+      "mean_average_ms": 0.3677303166666667,
+      "mean_average_ms_ci95": {
+        "low": 0.36594167,
+        "high": 0.37121924
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_4_pip_bilinear",
+      "process_average_ms": [
+        2.88955498,
+        2.8772249999999997,
+        2.90058834
+      ],
+      "mean_average_ms": 2.8891227733333333,
+      "mean_average_ms_ci95": {
+        "low": 2.8772249999999997,
+        "high": 2.90058834
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_4_pip_nearest",
+      "process_average_ms": [
+        0.42398877,
+        0.43285129,
+        0.41805706
+      ],
+      "mean_average_ms": 0.4249657066666666,
+      "mean_average_ms_ci95": {
+        "low": 0.41805706,
+        "high": 0.43285129000000006
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_8_grid_bilinear",
+      "process_average_ms": [
+        2.19585495,
+        2.2088029,
+        2.20303706
+      ],
+      "mean_average_ms": 2.2025649699999996,
+      "mean_average_ms_ci95": {
+        "low": 2.19585495,
+        "high": 2.2088029
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_8_grid_nearest",
+      "process_average_ms": [
+        0.34188839,
+        0.34571333000000004,
+        0.35559373
+      ],
+      "mean_average_ms": 0.3477318166666667,
+      "mean_average_ms_ci95": {
+        "low": 0.34188839,
+        "high": 0.35559373
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_8_pip_bilinear",
+      "process_average_ms": [
+        2.76990375,
+        2.77944921,
+        2.7694708099999996
+      ],
+      "mean_average_ms": 2.7729412566666665,
+      "mean_average_ms_ci95": {
+        "low": 2.7694708099999996,
+        "high": 2.7794492100000006
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    },
+    {
+      "case_id": "720p_8_pip_nearest",
+      "process_average_ms": [
+        0.40454467,
+        0.41039205,
+        0.40956667
+      ],
+      "mean_average_ms": 0.40816779666666664,
+      "mean_average_ms_ci95": {
+        "low": 0.40454467,
+        "high": 0.41039205
+      },
+      "baseline_average_ms": null,
+      "ratio_to_fixed_baseline": null,
+      "ratio_to_fixed_baseline_ci95": null,
+      "decision": "not_compared"
+    }
+  ]
+}

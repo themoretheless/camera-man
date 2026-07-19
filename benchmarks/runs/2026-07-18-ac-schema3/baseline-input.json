@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "max_regression_percent": 15.0,
+  "required_power_source": "AC Power",
+  "required_fixture_profile": "synthetic-solid-v1",
+  "baselines": [
+    {
+      "hardware": "aarch64 | Apple M4 Max",
+      "case_id": "720p_1_grid_nearest",
+      "average_ms": 0.368
+    },
+    {
+      "hardware": "aarch64 | Apple M4 Max",
+      "case_id": "1080p_4_grid_nearest",
+      "average_ms": 1.018
+    },
+    {
+      "hardware": "aarch64 | Apple M4 Max",
+      "case_id": "1080p_4_pip_bilinear",
+      "average_ms": 6.686
+    },
+    {
+      "hardware": "x86_64 | Apple M4 Max",
+      "case_id": "720p_1_grid_nearest",
+      "average_ms": 0.538
+    },
+    {
+      "hardware": "x86_64 | Apple M4 Max",
+      "case_id": "1080p_4_grid_nearest",
+      "average_ms": 1.206
+    },
+    {
+      "hardware": "x86_64 | Apple M4 Max",
+      "case_id": "1080p_4_pip_bilinear",
+      "average_ms": 8.696
+    }
+  ]
+}

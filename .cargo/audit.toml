@@ -1,0 +1,25 @@
+[advisories]
+ignore = [
+  "RUSTSEC-2024-0436",
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]
+informational_warnings = ["unmaintained", "unsound"]
+severity_threshold = "low"
+
+[output]
+deny = ["warnings"]
+format = "terminal"
+quiet = false
+show_tree = true
+
+[target]
+arch = ["aarch64", "x86_64"]
+os = ["macos"]
+
+# cargo-audit cannot exempt one yanked package. cargo-deny checks yanks against
+# an exact package exception, so disabling the duplicate broad check here does
+# not weaken the combined CI gate.
+[yanked]
+enabled = false
+update_index = true

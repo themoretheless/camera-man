@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "profile_id": "apple-m4-max-aarch64-1080p30-4-source",
+  "hardware": {
+    "os": "macos",
+    "architecture": "aarch64",
+    "cpu_brand_contains": "Apple M4 Max"
+  },
+  "workload": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "source_count": 4,
+    "warmup_frames": 120,
+    "minimum_duration_seconds": 28800,
+    "transport_slots": 3,
+    "max_pending_render_jobs": 1
+  },
+  "budgets": {
+    "maximum_late_frame_ratio": 0.001,
+    "maximum_resident_growth_bytes": 67108864,
+    "maximum_final_resident_growth_bytes": 33554432,
+    "compose_p95_nanos": 8000000,
+    "compose_p99_nanos": 12000000,
+    "publish_p95_nanos": 6000000,
+    "publish_p99_nanos": 10000000,
+    "frame_p95_nanos": 16000000,
+    "frame_p99_nanos": 25000000
+  }
+}

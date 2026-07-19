@@ -180,15 +180,21 @@ mod macos {
     ) -> ActiveRequest {
         let delegate = ActivationDelegate::new(status);
         let identifier = NSString::from_str(EXTENSION_BUNDLE_ID);
+        // SAFETY: the identifier and main queue are valid retained Objective-C
+        // objects for the duration of the factory call.
         let request = unsafe {
             OSSystemExtensionRequest::activationRequestForExtension_queue(
                 &identifier,
                 dispatch2::DispatchQueue::main(),
             )
         };
+        // SAFETY: `delegate` implements the required protocol and is retained
+        // in `ActiveRequest` for longer than the request's weak delegate link.
         unsafe {
             request.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         }
+        // SAFETY: `request` is fully initialized, retained below, and submitted
+        // on the main queue required by the SystemExtensions framework.
         unsafe {
             OSSystemExtensionManager::sharedManager().submitRequest(&request);
         }
@@ -257,6 +263,8 @@ mod macos {
     impl ActivationDelegate {
         fn new(status: Arc<Mutex<ExtensionActivationStatus>>) -> Retained<Self> {
             let this = Self::alloc().set_ivars(DelegateIvars { status });
+            // SAFETY: `this` is a newly allocated NSObject subclass with all
+            // Rust ivars initialized exactly once before calling super init.
             unsafe { msg_send![super(this), init] }
         }
 

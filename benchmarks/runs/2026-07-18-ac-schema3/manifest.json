@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "generated_unix_millis": 1784329613398,
+  "git_revision": "1d472826faf7166357d95e00a55c4645a8dba117",
+  "git_dirty": true,
+  "build_hash": "1d472826faf7",
+  "rustc": "rustc 1.98.0-nightly (57d06900f 2026-05-27)\nbinary: rustc\ncommit-hash: 57d06900fd7d9ee06d3a7f323bb77f17ab3cfaf8\ncommit-date: 2026-05-27\nhost: aarch64-apple-darwin\nrelease: 1.98.0-nightly\nLLVM version: 22.1.6",
+  "cargo": "cargo 1.98.0-nightly (fbb61be30 2026-05-26)",
+  "os_version": "26.6",
+  "required_power_source": "AC Power",
+  "fixture_profile": "synthetic-solid-v1",
+  "mode": "matrix",
+  "iterations": 100,
+  "warmup_iterations": 5,
+  "bootstrap_resamples": 10000,
+  "base_seed": 4846239634155457857,
+  "commands": [
+    {
+      "program": "cargo",
+      "arguments": [
+        "bench",
+        "--locked",
+        "--bench",
+        "compositor",
+        "--no-default-features"
+      ],
+      "environment": {
+        "CAMERAMAN_BENCH_BACKGROUND_LOAD": "benchmark series; no intentional background load",
+        "CAMERAMAN_BENCH_CASE_ORDER": "random",
+        "CAMERAMAN_BENCH_CASE_SEED": "4846239634155457857",
+        "CAMERAMAN_BENCH_FIXTURE": "synthetic-solid-v1",
+        "CAMERAMAN_BENCH_ITERATIONS": "100",
+        "CAMERAMAN_BENCH_JSON": "/Users/themoretheless/Documents/Sources/camera-man/benchmarks/runs/2026-07-18-ac-schema3/compositor-run-01.json",
+        "CAMERAMAN_BENCH_MODE": "matrix",
+        "CAMERAMAN_BENCH_WARMUP_ITERATIONS": "5"
+      }
+    },
+    {
+      "program": "cargo",
+      "arguments": [
+        "bench",
+        "--locked",
+        "--bench",
+        "compositor",
+        "--no-default-features"
+      ],
+      "environment": {
+        "CAMERAMAN_BENCH_BACKGROUND_LOAD": "benchmark series; no intentional background load",
+        "CAMERAMAN_BENCH_CASE_ORDER": "random",
+        "CAMERAMAN_BENCH_CASE_SEED": "16246954453478656342",
+        "CAMERAMAN_BENCH_FIXTURE": "synthetic-solid-v1",
+        "CAMERAMAN_BENCH_ITERATIONS": "100",
+        "CAMERAMAN_BENCH_JSON": "/Users/themoretheless/Documents/Sources/camera-man/benchmarks/runs/2026-07-18-ac-schema3/compositor-run-02.json",
+        "CAMERAMAN_BENCH_MODE": "matrix",
+        "CAMERAMAN_BENCH_WARMUP_ITERATIONS": "5"
+      }
+    },
+    {
+      "program": "cargo",
+      "arguments": [
+        "bench",
+        "--locked",
+        "--bench",
+        "compositor",
+        "--no-default-features"
+      ],
+      "environment": {
+        "CAMERAMAN_BENCH_BACKGROUND_LOAD": "benchmark series; no intentional background load",
+        "CAMERAMAN_BENCH_CASE_ORDER": "random",
+        "CAMERAMAN_BENCH_CASE_SEED": "9200925199092303211",
+        "CAMERAMAN_BENCH_FIXTURE": "synthetic-solid-v1",
+        "CAMERAMAN_BENCH_ITERATIONS": "100",
+        "CAMERAMAN_BENCH_JSON": "/Users/themoretheless/Documents/Sources/camera-man/benchmarks/runs/2026-07-18-ac-schema3/compositor-run-03.json",
+        "CAMERAMAN_BENCH_MODE": "matrix",
+        "CAMERAMAN_BENCH_WARMUP_ITERATIONS": "5"
+      }
+    }
+  ],
+  "environment_preflights": [
+    {
+      "captured_unix_millis": 1784329574922,
+      "power_source": "AC Power",
+      "battery_percent": 54,
+      "battery_state": "charging",
+      "power_mode": 2,
+      "thermal_warning": "No thermal warning level has been recorded",
+      "performance_warning": "No performance warning level has been recorded",
+      "cpu_power_status": "No CPU power status has been recorded",
+      "active_display_count": 3,
+      "load_average_1m": 22.8,
+      "active_process_count": 783,
+      "background_load_note": "benchmark series; no intentional background load"
+    },
+    {
+      "captured_unix_millis": 1784329575284,
+      "power_source": "AC Power",
+      "battery_percent": 54,
+      "battery_state": "charging",
+      "power_mode": 2,
+      "thermal_warning": "No thermal warning level has been recorded",
+      "performance_warning": "No performance warning level has been recorded",
+      "cpu_power_status": "No CPU power status has been recorded",
+      "active_display_count": 3,
+      "load_average_1m": 22.8,
+      "active_process_count": 782,
+      "background_load_note": "benchmark series; no intentional background load"
+    },
+    {
+      "captured_unix_millis": 1784329587750,
+      "power_source": "AC Power",
+      "battery_percent": 54,
+      "battery_state": "charging",
+      "power_mode": 2,
+      "thermal_warning": "No thermal warning level has been recorded",
+      "performance_warning": "No performance warning level has been recorded",
+      "cpu_power_status": "No CPU power status has been recorded",
+      "active_display_count": 3,
+      "load_average_1m": 25.51,
+      "active_process_count": 782,
+      "background_load_note": "benchmark series; no intentional background load"
+    },
+    {
+      "captured_unix_millis": 1784329588140,
+      "power_source": "AC Power",
+      "battery_percent": 54,
+      "battery_state": "charging",
+      "power_mode": 2,
+      "thermal_warning": "No thermal warning level has been recorded",
+      "performance_warning": "No performance warning level has been recorded",
+      "cpu_power_status": "No CPU power status has been recorded",
+      "active_display_count": 3,
+      "load_average_1m": 25.51,
+      "active_process_count": 782,
+      "background_load_note": "benchmark series; no intentional background load"
+    },
+    {
+      "captured_unix_millis": 1784329600423,
+      "power_source": "AC Power",
+      "battery_percent": 54,
+      "battery_state": "charging",
+      "power_mode": 2,
+      "thermal_warning": "No thermal warning level has been recorded",
+      "performance_warning": "No performance warning level has been recorded",
+      "cpu_power_status": "No CPU power status has been recorded",
+      "active_display_count": 3,
+      "load_average_1m": 29.21,
+      "active_process_count": 783,
+      "background_load_note": "benchmark series; no intentional background load"
+    },
+    {
+      "captured_unix_millis": 1784329600806,
+      "power_source": "AC Power",
+      "battery_percent": 54,
+      "battery_state": "charging",
+      "power_mode": 2,
+      "thermal_warning": "No thermal warning level has been recorded",
+      "performance_warning": "No performance warning level has been recorded",
+      "cpu_power_status": "No CPU power status has been recorded",
+      "active_display_count": 3,
+      "load_average_1m": 29.21,
+      "active_process_count": 783,
+      "background_load_note": "benchmark series; no intentional background load"
+    },
+    {
+      "captured_unix_millis": 1784329612973,
+      "power_source": "AC Power",
+      "battery_percent": 54,
+      "battery_state": "charging",
+      "power_mode": 2,
+      "thermal_warning": "No thermal warning level has been recorded",
+      "performance_warning": "No performance warning level has been recorded",
+      "cpu_power_status": "No CPU power status has been recorded",
+      "active_display_count": 3,
+      "load_average_1m": 31.57,
+      "active_process_count": 783,
+      "background_load_note": "benchmark series; no intentional background load"
+    }
+  ],
+  "baseline": {
+    "path": "/Users/themoretheless/Documents/Sources/camera-man/benchmarks/runs/2026-07-18-ac-schema3/baseline-input.json",
+    "sha256": "a61a64cbcb49027a78562156c9e493fcc72483bcaa405e2e8887e0bf785d0fdf"
+  },
+  "benchmark_executable": {
+    "path": "target/release/deps/compositor-c7fbcd8b04e449f1",
+    "sha256": "2fae186e9bf99b922c165a246fa3e64efd4714697dda21c125b8c6d0db4bdf2f"
+  },
+  "artifacts": [
+    {
+      "path": "/Users/themoretheless/Documents/Sources/camera-man/benchmarks/runs/2026-07-18-ac-schema3/compositor-run-01.json",
+      "sha256": "fe38e7160e4147614e6d68902068cb51cd4480ba66737dec2f26af43570c5193"
+    },
+    {
+      "path": "/Users/themoretheless/Documents/Sources/camera-man/benchmarks/runs/2026-07-18-ac-schema3/compositor-run-02.json",
+      "sha256": "1f79aa530cdc15d9c7a0731670de1602322de848758e2feb1fba9d51cbe60912"
+    },
+    {
+      "path": "/Users/themoretheless/Documents/Sources/camera-man/benchmarks/runs/2026-07-18-ac-schema3/compositor-run-03.json",
+      "sha256": "5fd68e4ca8f35b6090a4844e634c872cb1a5cd3e29708dfeeb6bf38f1e6148ce"
+    },
+    {
+      "path": "/Users/themoretheless/Documents/Sources/camera-man/benchmarks/runs/2026-07-18-ac-schema3/compositor-summary.json",
+      "sha256": "b152fb72c95a502422e4f433518bcd938a5599aac6878c72aaec19b05b306dac"
+    }
+  ]
+}

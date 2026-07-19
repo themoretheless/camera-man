@@ -1,0 +1,59 @@
+name: Quarterly compatibility review
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 1 1,4,7,10 *"
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned governance tools
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+          cargo install --locked cargo-audit --version 0.22.2
+          cargo install --locked cargo-deny --version 0.20.2
+          cargo install --locked cargo-hack --version 0.6.45
+          cargo install --locked cargo-outdated --version 0.19.0
+
+      - name: Advisory, license, source, and future-compatibility gates
+        run: |
+          cargo audit
+          cargo deny check --hide-inclusion-graph
+          scripts/verify-future-incompat.sh
+
+      - name: Supported feature combinations
+        run: |
+          cargo hack check --locked --no-default-features
+          cargo hack check --locked --feature-powerset --depth 2 --exclude-features all-experiments
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Record dependency and platform drift
+        run: |
+          mkdir -p target/quarterly-maintenance
+          cargo outdated --depth 2 > target/quarterly-maintenance/outdated.txt || test "$?" -eq 2
+          cargo tree --duplicates > target/quarterly-maintenance/duplicates.txt
+          cargo tree --target aarch64-apple-darwin | rg 'objc2|nokhwa|eframe' > target/quarterly-maintenance/arm64-platform-graph.txt
+          cargo tree --target x86_64-apple-darwin | rg 'objc2|nokhwa|eframe' > target/quarterly-maintenance/x86_64-platform-graph.txt
+          rustc --version --verbose > target/quarterly-maintenance/rustc.txt
+          xcodebuild -version > target/quarterly-maintenance/xcode.txt
+          xcrun --sdk macosx --show-sdk-version > target/quarterly-maintenance/macos-sdk.txt
+          rg -n 'Owner/review by|Review by|expires' docs/dependency-exceptions.md > target/quarterly-maintenance/exception-review-dates.txt
+          cp docs/release-readiness.md target/quarterly-maintenance/release-readiness.md
+
+      - name: Upload quarterly review evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: quarterly-maintenance-${{ github.run_id }}
+          if-no-files-found: error
+          path: target/quarterly-maintenance

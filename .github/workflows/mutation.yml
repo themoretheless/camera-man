@@ -1,0 +1,36 @@
+name: Mutation tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  focused-mutants:
+    runs-on: macos-14
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+      - name: Install cargo-mutants
+        run: cargo install --locked cargo-mutants --version 25.3.1
+      - name: Test protocol, provisioning, and renderer mutants
+        run: |
+          cargo mutants --in-place \
+            --file src/shared_memory_transport/validation.rs \
+            --file src/frame_integrity.rs \
+            --file src/media_contract.rs \
+            --file src/provisioning_profile.rs
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: focused-mutants
+          path: mutants.out
+          if-no-files-found: error

@@ -1,14 +1,34 @@
 use crate::camera::{CameraDevice, CameraDiscovery, FrameSource};
-use crate::error::CameraManError;
+use crate::config::VideoFormat;
+use crate::diagnostics::{PipelineStage, stage_span};
+use crate::error::{CameraManError, CaptureErrorKind};
 use crate::frame::{CapturedFrame, Frame, FrameMetadata, PixelFormat};
+use crate::performance::{CopyStage, copy_ledger};
+use std::collections::HashSet;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+static ACTIVE_CAMERA_IDS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+struct CameraLease {
+    id: String,
+}
+
+impl Drop for CameraLease {
+    fn drop(&mut self) {
+        ACTIVE_CAMERA_IDS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .expect("camera lease mutex poisoned")
+            .remove(&self.id);
+    }
+}
 
 pub struct NokhwaCameraDiscovery;
 
@@ -41,13 +61,15 @@ pub struct NokhwaFrameSource {
 /// freezing the dropping thread on that same wedge, `Drop` does not join the
 /// worker directly; it hands the `JoinHandle` to a short-lived reaper thread
 /// that joins in the background, so the OS thread is still reclaimed once
-/// the camera call unblocks, without ever blocking the caller.
+/// the camera call unblocks, without ever blocking the caller. A process-local
+/// camera-id lease makes a replacement worker wait off-thread until the old
+/// worker releases the device, preventing Stop -> Start reopen races.
 pub struct ThreadedNokhwaFrameSource {
     latest: Arc<Mutex<Option<CapturedFrame>>>,
     last_error: Arc<Mutex<Option<CameraManError>>>,
     /// Set once the worker has actually opened the device; `None` while still
     /// warming up. This is the camera's real negotiated rate, not a guess.
-    negotiated_fps: Arc<Mutex<Option<u32>>>,
+    negotiated_format: Arc<Mutex<Option<VideoFormat>>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -72,11 +94,16 @@ impl NokhwaFrameSource {
         index: nokhwa::utils::CameraIndex,
         source_id: String,
     ) -> Result<Self, CameraManError> {
-        let requested = nokhwa::utils::RequestedFormat::new::<nokhwa::pixel_format::RgbFormat>(
+        let requested = nokhwa::utils::RequestedFormat::new::<nokhwa::pixel_format::RgbAFormat>(
             nokhwa::utils::RequestedFormatType::AbsoluteHighestFrameRate,
         );
-        let mut camera = nokhwa::Camera::new(index, requested).map_err(nokhwa_error)?;
-        camera.open_stream().map_err(nokhwa_error)?;
+        let mut camera = nokhwa::Camera::new(index, requested)
+            .map_err(nokhwa_error)
+            .map_err(|error| error.context(format!("open {source_id}")))?;
+        camera
+            .open_stream()
+            .map_err(nokhwa_error)
+            .map_err(|error| error.context(format!("start stream {source_id}")))?;
         Ok(Self {
             source_id,
             camera,
@@ -91,22 +118,36 @@ impl NokhwaFrameSource {
     pub fn frame_rate(&self) -> u32 {
         self.camera.frame_rate()
     }
+
+    pub fn video_format(&self) -> VideoFormat {
+        let resolution = self.camera.resolution();
+        VideoFormat {
+            width: resolution.x(),
+            height: resolution.y(),
+            fps: self.camera.frame_rate().max(1),
+            pixel_format: PixelFormat::Bgra8,
+        }
+    }
 }
 
 impl FrameSource for NokhwaFrameSource {
     fn latest_frame(&mut self) -> Result<Option<CapturedFrame>, CameraManError> {
-        let buffer = self.camera.frame().map_err(nokhwa_error)?;
+        let _capture_span = stage_span(PipelineStage::Capture, self.sequence.wrapping_add(1), 0, 0);
+        let buffer = self
+            .camera
+            .frame()
+            .map_err(nokhwa_error)
+            .map_err(|error| error.context(format!("read {}", self.source_id)))?;
         let image = buffer
-            .decode_image::<nokhwa::pixel_format::RgbFormat>()
-            .map_err(nokhwa_error)?;
+            .decode_image::<nokhwa::pixel_format::RgbAFormat>()
+            .map_err(nokhwa_error)
+            .map_err(|error| error.context(format!("decode {}", self.source_id)))?;
         let width = image.width();
         let height = image.height();
-        let rgb = image.as_raw();
-        let mut bgra = Vec::with_capacity(rgb.len() / 3 * PixelFormat::Bgra8.bytes_per_pixel());
-
-        for pixel in rgb.chunks_exact(3) {
-            bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], 255]);
-        }
+        let mut bgra = image.into_raw();
+        rgba_to_bgra_in_place(&mut bgra);
+        copy_ledger().record_allocation(CopyStage::CaptureDecode, bgra.len());
+        copy_ledger().record_copy(CopyStage::CaptureDecode, bgra.len());
 
         self.sequence += 1;
         let frame = Frame::new_checked(width, height, PixelFormat::Bgra8, bgra)?;
@@ -115,16 +156,23 @@ impl FrameSource for NokhwaFrameSource {
     }
 }
 
+fn rgba_to_bgra_in_place(pixels: &mut [u8]) {
+    debug_assert!(pixels.len().is_multiple_of(4));
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+}
+
 impl ThreadedNokhwaFrameSource {
     pub fn open_id(id: &str) -> Self {
         let latest = Arc::new(Mutex::new(None));
         let last_error = Arc::new(Mutex::new(None));
-        let negotiated_fps = Arc::new(Mutex::new(None));
+        let negotiated_format = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
 
         let worker_latest = Arc::clone(&latest);
         let worker_last_error = Arc::clone(&last_error);
-        let worker_negotiated_fps = Arc::clone(&negotiated_fps);
+        let worker_negotiated_format = Arc::clone(&negotiated_format);
         let worker_stop = Arc::clone(&stop);
         let worker_id = id.to_string();
 
@@ -135,7 +183,7 @@ impl ThreadedNokhwaFrameSource {
                     &worker_id,
                     &worker_latest,
                     &worker_last_error,
-                    &worker_negotiated_fps,
+                    &worker_negotiated_format,
                     &worker_stop,
                 );
             })
@@ -144,7 +192,7 @@ impl ThreadedNokhwaFrameSource {
         Self {
             latest,
             last_error,
-            negotiated_fps,
+            negotiated_format,
             stop,
             worker: Some(worker),
         }
@@ -153,16 +201,21 @@ impl ThreadedNokhwaFrameSource {
     /// The camera's real negotiated frame rate, once known. `None` until the
     /// worker thread has finished opening the device.
     pub fn negotiated_fps(&self) -> Option<u32> {
+        self.negotiated_format().map(|format| format.fps)
+    }
+
+    pub fn negotiated_format(&self) -> Option<VideoFormat> {
         *self
-            .negotiated_fps
+            .negotiated_format
             .lock()
-            .expect("camera fps mutex poisoned")
+            .expect("camera format mutex poisoned")
     }
 }
 
-/// Body of the background capture loop. Runs until `stop` is set or the
-/// initial `open_id` fails. A panic inside a single iteration (camera or
-/// mutex failure) is caught so it surfaces as a normal error on the
+/// Body of the background capture loop. Runs until `stop` is set, reopening
+/// the device with bounded exponential backoff after open or stream failures.
+/// A panic inside a single iteration (camera or mutex failure) is caught so it
+/// surfaces as a normal error on the
 /// `last_error` slot instead of silently killing the thread with no signal:
 /// without this, `latest_frame()` would keep returning the last-known-good
 /// frame forever and the preview would look frozen-but-healthy.
@@ -170,41 +223,135 @@ fn run_capture_worker(
     id: &str,
     latest: &Arc<Mutex<Option<CapturedFrame>>>,
     last_error: &Arc<Mutex<Option<CameraManError>>>,
-    negotiated_fps: &Arc<Mutex<Option<u32>>>,
+    negotiated_format: &Arc<Mutex<Option<VideoFormat>>>,
     stop: &Arc<AtomicBool>,
 ) {
-    let mut source = match NokhwaFrameSource::open_id(id) {
-        Ok(source) => source,
-        Err(error) => {
-            *last_error.lock().expect("camera error mutex poisoned") = Some(error);
+    let Some(_lease) = wait_for_camera_lease(id, stop) else {
+        return;
+    };
+    let mut backoff = ReconnectBackoff::default();
+    while !stop.load(Ordering::Relaxed) {
+        let mut source = match NokhwaFrameSource::open_id(id) {
+            Ok(source) => source,
+            Err(error) => {
+                *last_error.lock().expect("camera error mutex poisoned") = Some(error);
+                *negotiated_format
+                    .lock()
+                    .expect("camera format mutex poisoned") = None;
+                if !sleep_until_retry(stop, backoff.next_delay()) {
+                    return;
+                }
+                continue;
+            }
+        };
+        *negotiated_format
+            .lock()
+            .expect("camera format mutex poisoned") = Some(source.video_format());
+        *last_error.lock().expect("camera error mutex poisoned") = None;
+
+        let mut failure_streak = 0_u8;
+        while !stop.load(Ordering::Relaxed) {
+            let outcome = panic::catch_unwind(AssertUnwindSafe(|| source.latest_frame()));
+            match outcome {
+                Ok(Ok(frame)) => {
+                    failure_streak = 0;
+                    backoff.observe_frame(frame.is_some());
+                    *latest.lock().expect("camera frame mutex poisoned") = frame;
+                    *last_error.lock().expect("camera error mutex poisoned") = None;
+                }
+                Ok(Err(error)) => {
+                    failure_streak = failure_streak.saturating_add(1);
+                    *last_error.lock().expect("camera error mutex poisoned") = Some(error);
+                    if failure_streak >= 3 {
+                        break;
+                    }
+                    if !sleep_until_retry(stop, Duration::from_millis(50)) {
+                        return;
+                    }
+                }
+                Err(panic_payload) => {
+                    let message = panic_message(&panic_payload);
+                    *last_error.lock().expect("camera error mutex poisoned") = Some(
+                        CameraManError::capture(format!("capture worker panicked: {message}")),
+                    );
+                    break;
+                }
+            }
+        }
+        *negotiated_format
+            .lock()
+            .expect("camera format mutex poisoned") = None;
+        if !stop.load(Ordering::Relaxed) && !sleep_until_retry(stop, backoff.next_delay()) {
             return;
         }
-    };
-    *negotiated_fps.lock().expect("camera fps mutex poisoned") = Some(source.frame_rate());
-
-    while !stop.load(Ordering::Relaxed) {
-        let outcome = panic::catch_unwind(AssertUnwindSafe(|| source.latest_frame()));
-        match outcome {
-            Ok(Ok(frame)) => {
-                *latest.lock().expect("camera frame mutex poisoned") = frame;
-                *last_error.lock().expect("camera error mutex poisoned") = None;
-            }
-            Ok(Err(error)) => {
-                *last_error.lock().expect("camera error mutex poisoned") = Some(error);
-            }
-            Err(panic_payload) => {
-                let message = panic_message(&panic_payload);
-                *last_error.lock().expect("camera error mutex poisoned") = Some(
-                    CameraManError::capture(format!("capture worker panicked: {message}")),
-                );
-                // The camera object may be in an inconsistent state after a
-                // panic unwound through it; stop rather than loop on a
-                // possibly-corrupt source.
-                return;
-            }
-        }
-        thread::sleep(Duration::from_millis(10));
     }
+}
+
+struct ReconnectBackoff {
+    next: Duration,
+}
+
+impl Default for ReconnectBackoff {
+    fn default() -> Self {
+        Self {
+            next: Duration::from_millis(100),
+        }
+    }
+}
+
+impl ReconnectBackoff {
+    fn next_delay(&mut self) -> Duration {
+        let delay = self.next;
+        self.next = (self.next * 2).min(Duration::from_secs(5));
+        delay
+    }
+
+    fn reset(&mut self) {
+        self.next = Duration::from_millis(100);
+    }
+
+    fn observe_frame(&mut self, received: bool) {
+        if received {
+            self.reset();
+        }
+    }
+}
+
+fn sleep_until_retry(stop: &AtomicBool, duration: Duration) -> bool {
+    let deadline = std::time::Instant::now() + duration;
+    while std::time::Instant::now() < deadline {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        thread::sleep(
+            deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .min(Duration::from_millis(25)),
+        );
+    }
+    !stop.load(Ordering::Relaxed)
+}
+
+fn wait_for_camera_lease(id: &str, stop: &AtomicBool) -> Option<CameraLease> {
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
+        if let Some(lease) = try_acquire_camera_lease(id) {
+            return Some(lease);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn try_acquire_camera_lease(id: &str) -> Option<CameraLease> {
+    let mut active = ACTIVE_CAMERA_IDS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .expect("camera lease mutex poisoned");
+    active
+        .insert(id.to_owned())
+        .then(|| CameraLease { id: id.to_owned() })
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -255,7 +402,7 @@ pub fn capture_one_with_timeout(
     timeout: Duration,
 ) -> Result<CapturedFrame, CameraManError> {
     let id = id.to_string();
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(crate::backpressure::CAPTURE_RESULTS.capacity);
 
     // If this times out, the spawned thread is left detached: nokhwa has no
     // cancellation hook, so the camera stays open until `open_id`/`frame()`
@@ -272,10 +419,13 @@ pub fn capture_one_with_timeout(
 
     match receiver.recv_timeout(timeout) {
         Ok(result) => result,
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(CameraManError::capture(format!(
-            "timed out after {}ms waiting for a frame",
-            timeout.as_millis()
-        ))),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(CameraManError::capture_with_kind(
+            CaptureErrorKind::Timeout,
+            format!(
+                "timed out after {}ms waiting for a frame",
+                timeout.as_millis()
+            ),
+        )),
         Err(mpsc::RecvTimeoutError::Disconnected) => Err(CameraManError::capture(
             "capture thread exited without sending a result",
         )),
@@ -283,5 +433,100 @@ pub fn capture_one_with_timeout(
 }
 
 fn nokhwa_error(error: nokhwa::NokhwaError) -> CameraManError {
-    CameraManError::capture(error.to_string())
+    let message = error.to_string();
+    let kind = match error {
+        nokhwa::NokhwaError::UnsupportedOperationError(_)
+        | nokhwa::NokhwaError::NotImplementedError(_) => CaptureErrorKind::Unsupported,
+        _ => CaptureErrorKind::classify(&message),
+    };
+    CameraManError::capture_with_kind(kind, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converts_rgba_to_bgra_without_reallocating() {
+        let mut pixels = vec![1, 2, 3, 4, 10, 20, 30, 40];
+        let allocation = pixels.as_ptr();
+
+        rgba_to_bgra_in_place(&mut pixels);
+
+        assert_eq!(pixels, [3, 2, 1, 4, 30, 20, 10, 40]);
+        assert_eq!(pixels.as_ptr(), allocation);
+    }
+    use crate::error::ErrorCode;
+
+    #[test]
+    fn maps_typed_nokhwa_unsupported_error_without_text_heuristics() {
+        let error = nokhwa_error(nokhwa::NokhwaError::NotImplementedError(String::from(
+            "manual exposure",
+        )));
+
+        assert_eq!(
+            error.code(),
+            ErrorCode::Capture(CaptureErrorKind::Unsupported)
+        );
+    }
+
+    #[test]
+    fn classifies_representative_avfoundation_messages() {
+        let samples = [
+            (
+                "AVFoundation authorization denied",
+                CaptureErrorKind::PermissionDenied,
+            ),
+            ("device is already in use", CaptureErrorKind::DeviceBusy),
+            ("no such device", CaptureErrorKind::DeviceNotFound),
+            ("capture stream stopped", CaptureErrorKind::Disconnected),
+        ];
+
+        for (message, expected) in samples {
+            assert_eq!(CaptureErrorKind::classify(message), expected);
+        }
+    }
+
+    #[test]
+    fn camera_lease_serializes_reopen_for_the_same_id() {
+        let id = "camera-lease-serializes-reopen";
+        let first = try_acquire_camera_lease(id).unwrap();
+        assert!(try_acquire_camera_lease(id).is_none());
+
+        drop(first);
+
+        assert!(try_acquire_camera_lease(id).is_some());
+    }
+
+    #[test]
+    fn waiting_camera_lease_honors_stop() {
+        let id = "camera-lease-honors-stop";
+        let _first = try_acquire_camera_lease(id).unwrap();
+        let stop = AtomicBool::new(true);
+
+        assert!(wait_for_camera_lease(id, &stop).is_none());
+    }
+
+    #[test]
+    fn reconnect_backoff_is_bounded_and_resettable() {
+        let mut backoff = ReconnectBackoff::default();
+        let delays = (0..8).map(|_| backoff.next_delay()).collect::<Vec<_>>();
+        assert_eq!(delays[0], Duration::from_millis(100));
+        assert_eq!(delays[6], Duration::from_secs(5));
+        assert_eq!(delays[7], Duration::from_secs(5));
+        backoff.reset();
+        assert_eq!(backoff.next_delay(), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn reconnect_backoff_resets_only_after_a_real_frame() {
+        let mut backoff = ReconnectBackoff::default();
+        assert_eq!(backoff.next_delay(), Duration::from_millis(100));
+
+        backoff.observe_frame(false);
+        assert_eq!(backoff.next_delay(), Duration::from_millis(200));
+
+        backoff.observe_frame(true);
+        assert_eq!(backoff.next_delay(), Duration::from_millis(100));
+    }
 }

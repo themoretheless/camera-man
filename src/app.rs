@@ -1,113 +1,285 @@
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::{SYSTEM_EXTENSION_INSTALL_ENTITLEMENT, provisioning};
+use crate::app_preferences::{
+    AppPreferences, CURRENT_SCHEMA_VERSION, FpsMode, InputMode, UiLocale, default_preferences_path,
+};
+use crate::camera_discovery_worker::CameraDiscoveryWorker;
+use crate::render_worker::{RenderJob, RenderWorker};
+use crate::{
+    APPLICATION_GROUPS_ENTITLEMENT, EXTENSION_APP_SANDBOX_ENTITLEMENT,
+    SYSTEM_EXTENSION_INSTALL_ENTITLEMENT, provisioning,
+};
 use camera_man::FrameSource;
 use camera_man::{
-    CameraDevice, CameraDiscovery, CapturedFrame, CompositionLayout, Compositor,
-    ExtensionActivationStatus, ExtensionInstaller, Frame, FrameSpoolSink, NokhwaCameraDiscovery,
-    PixelFormat, SyntheticFrameSource, ThreadedNokhwaFrameSource, VideoFormat, VirtualCameraSink,
-    write_ppm,
+    CameraDevice, CapturedFrame, CompositionLayout, ConsumerProgress, EXTENSION_BUNDLE_ID,
+    ExtensionActivationStatus, ExtensionInstaller, Frame, FrameMetadata, FrameTransportSink,
+    MissingSourcePolicy, PipelineStage, PixelFormat, ProducerProgress, Rotation,
+    SCENE_PARSER_LIMITS, SCENE_SCHEMA_VERSION, ScalingFilter, SceneChange, SceneDocument,
+    SceneInputMode, SourceFit, SourceHealthSummary, SourceHealthVector, SourceTransform,
+    SyntheticFrameSource, ThreadedNokhwaFrameSource, VIRTUAL_CAMERA_DEFAULT_FPS,
+    VIRTUAL_CAMERA_FPS_PRESETS, VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS,
+    VIRTUAL_CAMERA_WIDTH, VideoFormat,
 };
 use eframe::egui;
 
-const OUTPUT_WIDTH: u32 = 1920;
-const OUTPUT_HEIGHT: u32 = 1080;
-const SOURCE_WIDTH: u32 = 320;
-const SOURCE_HEIGHT: u32 = 240;
+mod accessibility;
+mod capture_coordination;
+mod controller;
+mod extension_readiness;
+mod io_worker;
+mod localization;
+mod scene_commands;
+mod scenes;
+mod ui;
+mod ui_contracts;
+mod ui_output;
+mod ui_scene;
+mod ui_setup;
+mod ui_tokens;
 
-/// Fixed fps choices offered next to "Auto" in the UI.
-const FPS_PRESETS: [u32; 4] = [15, 24, 30, 60];
+use accessibility::{progress_indicator, system_accessibility_settings};
+use capture_coordination::SourceSlot;
+use controller::{AppCommand, AppEvent, WorkflowState, reduce};
+use localization::{UiText, tr};
+use scene_commands::SceneEditCommand;
+use ui_contracts::*;
+use ui_tokens::*;
+
+pub(crate) use extension_readiness::{
+    app_bundle_application_group, app_bundle_has_activation_location, current_app_bundle_path,
+    extension_activation_metadata,
+};
+#[cfg(test)]
+use extension_readiness::{
+    app_bundle_path_for_executable, extension_activation_metadata_from_value,
+};
+use extension_readiness::{extension_capability, provisioning_profile_status};
+use io_worker::{DEFAULT_DIAGNOSTICS_PATH, IoOperation, IoOutcome, IoWorker, RedactedDiagnostics};
+
+// Synthetic sources are solid colors. A 4:3 logical tile preserves their
+// composition geometry without allocating a 320x240 buffer every app tick.
+const SOURCE_WIDTH: u32 = 4;
+const SOURCE_HEIGHT: u32 = 3;
+const PREVIEW_MAX_WIDTH: u32 = 960;
+const PREVIEW_MAX_HEIGHT: u32 = 540;
+const PREVIEW_INTERVAL: Duration =
+    Duration::from_nanos(1_000_000_000 / VIRTUAL_CAMERA_DEFAULT_FPS as u64);
+const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(8);
+const CAMERA_DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const DEFAULT_SCENE_PATH: &str = "target/cameraman-scene.json";
+
 /// What Auto resolves to before any real camera has reported its negotiated
 /// rate (Synthetic mode, or Real mode before Start / before the capture
 /// thread finishes opening the device). Matches the old hardcoded behavior.
-const DEFAULT_FPS: u32 = 30;
 /// How long a non-error event (export confirmation etc.) stays in the status bar.
 const EVENT_TTL: Duration = Duration::from_secs(4);
-/// Errors stay longer so a fast render loop cannot wipe them instantly.
-const ERROR_TTL: Duration = Duration::from_secs(8);
-/// Consecutive capture failures (roughly 3 s at the active fps) before the
-/// preview auto-stops instead of hammering a broken camera and spamming the
-/// status bar.
-const MAX_CAPTURE_ERROR_STREAK: u32 = 90;
-
-/// How to pick the render/output frame rate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FpsMode {
-    /// The highest frame rate actually negotiated across the selected real
-    /// cameras (`ThreadedNokhwaFrameSource::negotiated_fps`), so a 60fps
-    /// camera is not artificially capped at some arbitrary default. Falls
-    /// back to `DEFAULT_FPS` for Synthetic mode or before any camera has
-    /// finished opening.
-    Auto,
-    Fixed(u32),
-}
-
-// Palette: one place for every hardcoded color in the app.
-const COLOR_WINDOW: egui::Color32 = egui::Color32::from_rgb(24, 27, 31);
-const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(30, 34, 38);
-const COLOR_WIDGET: egui::Color32 = egui::Color32::from_rgb(48, 54, 60);
-const COLOR_WIDGET_HOVER: egui::Color32 = egui::Color32::from_rgb(62, 72, 82);
-const COLOR_WIDGET_ACTIVE: egui::Color32 = egui::Color32::from_rgb(67, 115, 132);
-const COLOR_ACCENT: egui::Color32 = egui::Color32::from_rgb(64, 132, 158);
-const COLOR_STOP: egui::Color32 = egui::Color32::from_rgb(160, 68, 68);
-const COLOR_OK: egui::Color32 = egui::Color32::from_rgb(112, 176, 128);
-const COLOR_ERROR: egui::Color32 = egui::Color32::from_rgb(224, 108, 108);
-const COLOR_WARNING: egui::Color32 = egui::Color32::from_rgb(214, 172, 96);
-const COLOR_DIM: egui::Color32 = egui::Color32::from_gray(150);
-
 pub fn run() -> eframe::Result<()> {
+    let fixture_capture = std::env::var_os("CAMERAMAN_UI_SCREENSHOT_TO").map(PathBuf::from);
+    let preferences_path = fixture_capture
+        .as_ref()
+        .map(|path| path.with_extension("preferences.json"))
+        .or_else(default_preferences_path);
+    let logical_size = ui_fixture_logical_size();
+    let initial_size = [logical_size[0] as f32, logical_size[1] as f32];
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("CameraMan")
-            .with_inner_size([1120.0, 720.0])
-            .with_min_inner_size([920.0, 560.0]),
+            .with_inner_size(initial_size)
+            .with_min_inner_size([MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT]),
+        persist_window: fixture_capture.is_none(),
+        persistence_path: fixture_capture
+            .as_ref()
+            .map(|path| path.with_extension("state.ron")),
         ..Default::default()
     };
 
     eframe::run_native(
         "CameraMan",
         options,
-        Box::new(|cc| Ok(Box::new(CameraManApp::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(CameraManApp::new(cc, preferences_path.clone())))),
     )
 }
 
-#[derive(Debug, Clone)]
-struct SourceSlot {
-    id: &'static str,
-    name: &'static str,
-    bgra: [u8; 4],
-    selected: bool,
+fn ui_fixture_logical_size() -> [u32; 2] {
+    std::env::var("CAMERAMAN_UI_FIXTURE_SIZE")
+        .ok()
+        .and_then(|value| {
+            value
+                .split_once('x')
+                .map(|(width, height)| (width.to_owned(), height.to_owned()))
+        })
+        .and_then(|(width, height)| Some([width.parse().ok()?, height.parse().ok()?]))
+        .unwrap_or([1120, 720])
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InputMode {
-    Synthetic,
-    Real,
+fn ui_fixture_target_size() -> [u32; 2] {
+    let logical = ui_fixture_logical_size();
+    let scale = std::env::var("CAMERAMAN_UI_FIXTURE_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|scale| matches!(scale, 1 | 2))
+        .unwrap_or(1);
+    [logical[0] * scale, logical[1] * scale]
 }
 
-/// A short-lived message for the status bar: export confirmations, errors.
-/// Kept separate from the derived state line so a 30 fps status update cannot
-/// overwrite feedback the user still needs to read.
+/// A short-lived confirmation kept separate from sticky errors and live state.
 struct StatusEvent {
     text: String,
     at: Instant,
-    is_error: bool,
+}
+
+enum VirtualCameraSelfTest {
+    Idle,
+    Running {
+        started: Instant,
+        last_submit: Instant,
+        target: Option<ProducerProgress>,
+    },
+    Passed {
+        consumer: ConsumerProgress,
+    },
+    Failed(String),
+}
+
+/// Derived undo/redo value. It can be rebuilt from runtime scene state and is
+/// never an independent persisted source of truth.
+#[derive(Clone, PartialEq)]
+struct SceneSnapshot {
+    input_mode: InputMode,
+    source_ids: Vec<String>,
+    layout: CompositionLayout,
+    scaling_filter: ScalingFilter,
+    fps_mode: FpsMode,
+    source_transforms: BTreeMap<String, SourceTransform>,
+    missing_source_policy: MissingSourcePolicy,
+    active_scene_name: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RenderFingerprint {
+    frames: Vec<Option<FrameFingerprint>>,
+    layout: CompositionLayout,
+    format: VideoFormat,
+    scaling_filter: ScalingFilter,
+    source_transforms: Vec<SourceTransform>,
+    publish_virtual: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct FrameFingerprint {
+    source_id: String,
+    sequence: u64,
+    monotonic_timestamp_nanos: u64,
+}
+
+impl RenderFingerprint {
+    fn new(
+        frames: &[Option<CapturedFrame>],
+        layout: CompositionLayout,
+        format: VideoFormat,
+        scaling_filter: ScalingFilter,
+        source_transforms: Vec<SourceTransform>,
+        publish_virtual: bool,
+    ) -> Self {
+        Self {
+            frames: frames
+                .iter()
+                .map(|frame| {
+                    frame.as_ref().map(|frame| FrameFingerprint {
+                        source_id: frame.metadata().source_id.clone(),
+                        sequence: frame.metadata().sequence,
+                        monotonic_timestamp_nanos: frame.metadata().monotonic_timestamp().0,
+                    })
+                })
+                .collect(),
+            layout,
+            format,
+            scaling_filter,
+            source_transforms,
+            publish_virtual,
+        }
+    }
+}
+
+struct UiFixtureCapture {
+    path: PathBuf,
+    target_size: [u32; 2],
+    settle_frames: u8,
+    requested: bool,
 }
 
 impl StatusEvent {
     fn is_visible(&self) -> bool {
-        let ttl = if self.is_error { ERROR_TTL } else { EVENT_TTL };
-        self.at.elapsed() < ttl
+        self.at.elapsed() < EVENT_TTL
     }
 }
 
+enum ProvisioningProfileStatus {
+    Missing,
+    Valid {
+        path: PathBuf,
+        team_identifier: Option<String>,
+    },
+    Invalid {
+        path: PathBuf,
+        error: String,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum AppLaunchContext {
+    BareExecutable,
+    DevelopmentBundle,
+    ApplicationsBundle,
+}
+
+impl AppLaunchContext {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::BareExecutable => "bare executable",
+            Self::DevelopmentBundle => "development .app",
+            Self::ApplicationsBundle => "Applications .app",
+        }
+    }
+}
+
+/// UI-thread-owned runtime coordinator. Workers receive typed jobs and return
+/// typed snapshots; they never borrow this aggregate.
 pub struct CameraManApp {
     sources: Vec<SourceSlot>,
     input_mode: InputMode,
     real_devices: Vec<CameraDevice>,
+    camera_discovery: CameraDiscoveryWorker,
+    announce_discovery_result: bool,
     /// Selection order doubles as composition order (first checked -> first cell).
     selected_real_ids: Vec<String>,
+    selected_source_id: Option<String>,
+    source_transforms: BTreeMap<String, SourceTransform>,
+    missing_source_policy: MissingSourcePolicy,
+    last_good_frames: HashMap<String, (CapturedFrame, Instant)>,
+    scenes: Vec<SceneDocument>,
+    active_scene_name: Option<String>,
+    scene_name_input: String,
+    undo_stack: Vec<SceneSnapshot>,
+    redo_stack: Vec<SceneSnapshot>,
+    pending_scene_edit: Option<SceneSnapshot>,
+    skip_history_commit: bool,
+    scene_path: PathBuf,
+    import_preview: Option<SceneDocument>,
+    locale: UiLocale,
+    high_contrast: bool,
+    system_increase_contrast: bool,
+    reduce_motion: bool,
+    differentiate_without_color: bool,
+    voice_over_enabled: bool,
+    show_setup: bool,
+    force_setup_fixture: bool,
+    fixture_state: Option<UiFixtureState>,
+    fixture_capture: Option<UiFixtureCapture>,
+    stale_source_count: usize,
+    virtual_camera_self_test: VirtualCameraSelfTest,
     /// Only devices currently in `selected_real_ids` have an entry here;
     /// unchecking a device drops its entry immediately, releasing the camera.
     /// The trailing `u32` is that camera's own consecutive-failure streak,
@@ -117,20 +289,33 @@ pub struct CameraManApp {
     /// the all-cameras-failing case).
     real_sources: Vec<(String, ThreadedNokhwaFrameSource, u32)>,
     extension_installer: ExtensionInstaller,
-    /// Computed once at startup; see `extension_capable()`.
+    extension_status_override: Option<ExtensionActivationStatus>,
+    /// Computed once at startup; see `extension_capability()`.
     extension_capable: bool,
+    extension_capability_reason: Option<String>,
+    launch_context: AppLaunchContext,
+    signing_team_identifier: Option<String>,
+    extension_profile_present: bool,
+    provisioning_profile_status: ProvisioningProfileStatus,
     fps_mode: FpsMode,
     /// The fps actually in effect right now: either the fixed choice, or (in
-    /// Auto) the max negotiated across open real cameras / `DEFAULT_FPS`.
-    /// Recomputed at the top of every `render_preview` call.
+    /// Auto) the capped max negotiated across open real cameras / the shared
+    /// virtual-camera default.
+    /// Recomputed at the top of every `request_render` call.
     active_fps: u32,
     layout: CompositionLayout,
-    compositor: Compositor,
+    scaling_filter: ScalingFilter,
+    render_worker: RenderWorker,
+    /// Invalidates a completed frame when source/layout state changed while
+    /// that frame was still being composed on the worker.
+    render_epoch: u64,
+    last_render_fingerprint: Option<RenderFingerprint>,
     running: bool,
     tick: u64,
     frames_rendered: u64,
     last_frame_at: Instant,
-    event: Option<StatusEvent>,
+    notice: Option<StatusEvent>,
+    sticky_error: Option<String>,
     capture_error_streak: u32,
     waiting_for_camera: bool,
     fps_window_start: Instant,
@@ -138,65 +323,182 @@ pub struct CameraManApp {
     measured_fps: f32,
     preview: Option<Frame>,
     preview_texture: Option<egui::TextureHandle>,
+    last_preview_upload: Instant,
     virtual_output_enabled: bool,
-    virtual_sink: FrameSpoolSink,
-    virtual_connected: bool,
+    virtual_endpoint: String,
     virtual_frames_sent: u64,
     export_path: PathBuf,
+    preferences_path: Option<PathBuf>,
+    io_worker: IoWorker,
+    diagnostics_path: PathBuf,
 }
 
 impl CameraManApp {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        configure_style(&cc.egui_ctx);
+    fn new(cc: &eframe::CreationContext<'_>, preferences_path: Option<PathBuf>) -> Self {
+        let mut preferences = AppPreferences::load(cc.storage, preferences_path.as_deref());
+        let accessibility = system_accessibility_settings();
+        if let Ok(locale) = std::env::var("CAMERAMAN_UI_LOCALE") {
+            preferences.locale = match locale.to_ascii_lowercase().as_str() {
+                "ru" => UiLocale::Russian,
+                "pseudo" | "pseudo-long" => UiLocale::PseudoLong,
+                _ => UiLocale::English,
+            };
+        }
+        if std::env::var_os("CAMERAMAN_HIGH_CONTRAST").is_some() {
+            preferences.high_contrast = true;
+        }
+        configure_style(
+            &cc.egui_ctx,
+            preferences.high_contrast || accessibility.increase_contrast,
+        );
+        let mut sources = vec![
+            SourceSlot {
+                id: "desk",
+                name: "Desk Camera",
+                bgra: [235, 94, 40, 255],
+                selected: preferences
+                    .selected_synthetic_ids
+                    .iter()
+                    .any(|id| id == "desk"),
+            },
+            SourceSlot {
+                id: "side",
+                name: "Side Camera",
+                bgra: [62, 181, 137, 255],
+                selected: preferences
+                    .selected_synthetic_ids
+                    .iter()
+                    .any(|id| id == "side"),
+            },
+            SourceSlot {
+                id: "wide",
+                name: "Wide Camera",
+                bgra: [72, 126, 220, 255],
+                selected: preferences
+                    .selected_synthetic_ids
+                    .iter()
+                    .any(|id| id == "wide"),
+            },
+            SourceSlot {
+                id: "overhead",
+                name: "Overhead",
+                bgra: [196, 166, 76, 255],
+                selected: preferences
+                    .selected_synthetic_ids
+                    .iter()
+                    .any(|id| id == "overhead"),
+            },
+        ];
+        sources.sort_by_key(|source| {
+            preferences
+                .selected_synthetic_ids
+                .iter()
+                .position(|id| id == source.id)
+                .unwrap_or(usize::MAX)
+        });
 
-        let format = VideoFormat {
-            width: OUTPUT_WIDTH,
-            height: OUTPUT_HEIGHT,
-            fps: DEFAULT_FPS,
-            pixel_format: PixelFormat::Bgra8,
+        let virtual_sink = FrameTransportSink::default();
+        let virtual_endpoint = virtual_sink.description();
+        let render_worker = RenderWorker::new(virtual_sink);
+        let current_bundle = current_app_bundle_path();
+        let launch_context = match current_bundle.as_deref() {
+            Some(bundle) if app_bundle_has_activation_location(bundle) => {
+                AppLaunchContext::ApplicationsBundle
+            }
+            Some(_) => AppLaunchContext::DevelopmentBundle,
+            None => AppLaunchContext::BareExecutable,
         };
+        let signing_team_identifier = current_bundle
+            .as_deref()
+            .and_then(|bundle| crate::codesign_team_identifier(bundle).ok().flatten());
+        let extension_profile_present = current_bundle.as_deref().is_some_and(|bundle| {
+            bundle
+                .join("Contents/Library/SystemExtensions")
+                .join(format!("{EXTENSION_BUNDLE_ID}.systemextension"))
+                .join("Contents/embedded.provisionprofile")
+                .is_file()
+        });
+        let extension_capability = extension_capability();
+        let selected_source_id = match preferences.input_mode {
+            InputMode::Synthetic => sources
+                .iter()
+                .find(|source| source.selected)
+                .map(|source| source.id.to_owned()),
+            InputMode::Real => preferences.selected_real_ids.first().cloned(),
+        };
+        let scene_name_input = preferences
+            .active_scene_name
+            .clone()
+            .unwrap_or_else(|| String::from("Scene 1"));
+        let fixture_state = std::env::var("CAMERAMAN_UI_FIXTURE_STATE")
+            .ok()
+            .and_then(|value| UiFixtureState::parse(&value));
+        let force_setup_fixture = std::env::var_os("CAMERAMAN_UI_SHOW_SETUP").is_some()
+            || matches!(
+                fixture_state,
+                Some(UiFixtureState::Setup | UiFixtureState::InstallError)
+            );
+        let fixture_capture =
+            std::env::var_os("CAMERAMAN_UI_SCREENSHOT_TO").map(|path| UiFixtureCapture {
+                path: PathBuf::from(path),
+                target_size: ui_fixture_target_size(),
+                settle_frames: 8,
+                requested: false,
+            });
         let mut app = Self {
-            sources: vec![
-                SourceSlot {
-                    id: "desk",
-                    name: "Desk Camera",
-                    bgra: [235, 94, 40, 255],
-                    selected: true,
-                },
-                SourceSlot {
-                    id: "side",
-                    name: "Side Camera",
-                    bgra: [62, 181, 137, 255],
-                    selected: true,
-                },
-                SourceSlot {
-                    id: "wide",
-                    name: "Wide Camera",
-                    bgra: [72, 126, 220, 255],
-                    selected: true,
-                },
-                SourceSlot {
-                    id: "overhead",
-                    name: "Overhead",
-                    bgra: [196, 166, 76, 255],
-                    selected: false,
-                },
-            ],
-            input_mode: InputMode::Synthetic,
+            sources,
+            input_mode: preferences.input_mode,
             real_devices: Vec::new(),
-            selected_real_ids: Vec::new(),
+            camera_discovery: CameraDiscoveryWorker::new(),
+            announce_discovery_result: false,
+            selected_real_ids: preferences.selected_real_ids,
+            selected_source_id,
+            source_transforms: preferences.source_transforms,
+            missing_source_policy: preferences.missing_source_policy,
+            last_good_frames: HashMap::new(),
+            scenes: preferences.scenes,
+            active_scene_name: preferences.active_scene_name,
+            scene_name_input,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            pending_scene_edit: None,
+            skip_history_commit: false,
+            scene_path: PathBuf::from(DEFAULT_SCENE_PATH),
+            import_preview: None,
+            locale: preferences.locale,
+            high_contrast: preferences.high_contrast,
+            system_increase_contrast: accessibility.increase_contrast,
+            reduce_motion: accessibility.reduce_motion,
+            differentiate_without_color: accessibility.differentiate_without_color,
+            voice_over_enabled: accessibility.voice_over_enabled,
+            show_setup: force_setup_fixture,
+            force_setup_fixture,
+            fixture_state,
+            fixture_capture,
+            stale_source_count: 0,
+            virtual_camera_self_test: VirtualCameraSelfTest::Idle,
             real_sources: Vec::new(),
             extension_installer: ExtensionInstaller::new(),
-            extension_capable: extension_capable(),
-            fps_mode: FpsMode::Auto,
-            active_fps: DEFAULT_FPS,
-            layout: CompositionLayout::Grid,
-            compositor: Compositor::new(format),
+            extension_status_override: None,
+            extension_capable: extension_capability.is_ok(),
+            extension_capability_reason: extension_capability.err(),
+            launch_context,
+            signing_team_identifier,
+            extension_profile_present,
+            provisioning_profile_status: provisioning_profile_status(),
+            fps_mode: preferences.fps_mode,
+            active_fps: VIRTUAL_CAMERA_DEFAULT_FPS,
+            layout: preferences.layout,
+            scaling_filter: preferences.scaling_filter,
+            render_worker,
+            render_epoch: 0,
+            last_render_fingerprint: None,
             running: false,
             tick: 0,
             frames_rendered: 0,
             last_frame_at: Instant::now(),
-            event: None,
+            notice: None,
+            sticky_error: None,
             capture_error_streak: 0,
             waiting_for_camera: false,
             fps_window_start: Instant::now(),
@@ -204,15 +506,84 @@ impl CameraManApp {
             measured_fps: 0.0,
             preview: None,
             preview_texture: None,
-            virtual_output_enabled: true,
-            virtual_sink: FrameSpoolSink::default(),
-            virtual_connected: false,
+            last_preview_upload: Instant::now(),
+            virtual_output_enabled: preferences.virtual_output_enabled,
+            virtual_endpoint,
             virtual_frames_sent: 0,
-            export_path: PathBuf::from("target/camera-man-app-preview.ppm"),
+            export_path: preferences.export_path,
+            preferences_path,
+            io_worker: IoWorker::new(),
+            diagnostics_path: PathBuf::from(DEFAULT_DIAGNOSTICS_PATH),
         };
-        app.refresh_real_devices(false);
-        app.render_preview(&cc.egui_ctx, false);
+        if let Some(state) = fixture_state {
+            app.configure_ui_fixture_state(state);
+        } else {
+            app.start_camera_discovery(false);
+        }
+        if !matches!(
+            fixture_state,
+            Some(UiFixtureState::Empty | UiFixtureState::Disconnected)
+        ) {
+            let fixture_running = app.running;
+            if fixture_state.is_some() {
+                app.running = false;
+            }
+            app.request_render(&cc.egui_ctx, false, true);
+            app.running = fixture_running;
+        }
         app
+    }
+
+    fn configure_ui_fixture_state(&mut self, state: UiFixtureState) {
+        match state {
+            UiFixtureState::Workspace => {}
+            UiFixtureState::Setup => self.show_setup = true,
+            UiFixtureState::Empty => {
+                self.sources
+                    .iter_mut()
+                    .for_each(|source| source.selected = false);
+                self.selected_real_ids.clear();
+                self.selected_source_id = None;
+                self.preview = None;
+                self.preview_texture = None;
+            }
+            UiFixtureState::Disconnected => {
+                let id = String::from("fixture-camera");
+                self.input_mode = InputMode::Real;
+                self.real_devices = vec![CameraDevice {
+                    id: id.clone(),
+                    name: String::from("Studio Camera"),
+                }];
+                self.selected_real_ids = vec![id.clone()];
+                self.selected_source_id = Some(id);
+                self.running = true;
+                self.waiting_for_camera = true;
+                self.sticky_error = Some(String::from(
+                    "Camera disconnected. Reconnect it, refresh cameras, then retry.",
+                ));
+            }
+            UiFixtureState::InstallError => {
+                self.show_setup = true;
+                self.extension_capable = true;
+                self.extension_capability_reason = None;
+                self.extension_status_override = Some(ExtensionActivationStatus::Failed(
+                    String::from("The embedded extension signature could not be verified"),
+                ));
+                self.sticky_error = Some(String::from(
+                    "Extension installation failed. Review signing details, rebuild the signed bundle, then retry activation.",
+                ));
+            }
+            UiFixtureState::Running => {
+                self.running = true;
+                self.waiting_for_camera = false;
+            }
+        }
+    }
+
+    fn extension_status(&self) -> ExtensionActivationStatus {
+        self.extension_status_override
+            .clone()
+            .unwrap_or_else(|| self.extension_installer.status())
     }
 
     fn selected_count(&self) -> usize {
@@ -222,28 +593,126 @@ impl CameraManApp {
         }
     }
 
+    fn preferences(&self) -> AppPreferences {
+        AppPreferences {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            input_mode: self.input_mode,
+            selected_synthetic_ids: self
+                .sources
+                .iter()
+                .filter(|source| source.selected)
+                .map(|source| source.id.to_owned())
+                .collect(),
+            selected_real_ids: self.selected_real_ids.clone(),
+            layout: self.layout,
+            scaling_filter: self.scaling_filter,
+            fps_mode: self.fps_mode,
+            virtual_output_enabled: self.virtual_output_enabled,
+            export_path: self.export_path.clone(),
+            locale: self.locale,
+            high_contrast: self.high_contrast,
+            source_transforms: self.source_transforms.clone(),
+            missing_source_policy: self.missing_source_policy,
+            scenes: self.scenes.clone(),
+            active_scene_name: self.active_scene_name.clone(),
+        }
+    }
+
+    fn diagnostics_summary(&self) -> String {
+        let (profile_status, profile_team_identifier) = match &self.provisioning_profile_status {
+            ProvisioningProfileStatus::Missing => ("missing", "unavailable"),
+            ProvisioningProfileStatus::Valid {
+                team_identifier, ..
+            } => ("valid", team_identifier.as_deref().unwrap_or("unavailable")),
+            ProvisioningProfileStatus::Invalid { .. } => ("invalid", "unavailable"),
+        };
+        format!(
+            "CameraMan {}\nlaunch={}\nsigning_team_id={}\nprovisioning_profile={}\nprofile_team_id={}\nextension_profile_present={}\nactivation_capable={}\nactivation_capability_reason={}\nactivation_status={}\ntransport={}\nreduce_motion={}\ndifferentiate_without_color={}\nvoice_over_enabled={}\n",
+            env!("CARGO_PKG_VERSION"),
+            self.launch_context.label(),
+            self.signing_team_identifier
+                .as_deref()
+                .unwrap_or("unavailable"),
+            profile_status,
+            profile_team_identifier,
+            self.extension_profile_present,
+            self.extension_capable,
+            self.extension_capability_reason
+                .as_deref()
+                .unwrap_or("ready"),
+            self.extension_status(),
+            self.virtual_endpoint,
+            self.reduce_motion,
+            self.differentiate_without_color,
+            self.voice_over_enabled,
+        )
+    }
+
+    fn redacted_diagnostics(&self) -> RedactedDiagnostics {
+        let profile_status = match self.provisioning_profile_status {
+            ProvisioningProfileStatus::Missing => "missing",
+            ProvisioningProfileStatus::Valid { .. } => "valid",
+            ProvisioningProfileStatus::Invalid { .. } => "invalid",
+        };
+        RedactedDiagnostics::new(
+            self.launch_context.label(),
+            profile_status,
+            self.extension_profile_present,
+            self.extension_capable,
+            self.extension_status().to_string(),
+            self.selected_count(),
+            self.scenes.len(),
+            self.running,
+            self.reduce_motion,
+            self.high_contrast || self.system_increase_contrast,
+            self.differentiate_without_color,
+            self.voice_over_enabled,
+        )
+    }
+
     fn set_event(&mut self, text: impl Into<String>, is_error: bool) {
-        self.event = Some(StatusEvent {
-            text: text.into(),
-            at: Instant::now(),
-            is_error,
-        });
+        let text = text.into();
+        if is_error {
+            if self.sticky_error.as_deref() == Some(text.as_str()) {
+                return;
+            }
+            self.sticky_error = Some(text);
+        } else {
+            if self
+                .notice
+                .as_ref()
+                .is_some_and(|notice| notice.is_visible() && notice.text == text)
+            {
+                return;
+            }
+            self.notice = Some(StatusEvent {
+                text,
+                at: Instant::now(),
+            });
+        }
     }
 
     fn toggle_running(&mut self, ctx: &egui::Context) {
-        if self.running {
-            self.stop_streaming();
-        } else {
-            if self.selected_count() == 0 {
+        let mut workflow = WorkflowState {
+            running: self.running,
+            selected_sources: self.selected_count(),
+            virtual_output_enabled: self.virtual_output_enabled,
+        };
+        match reduce(&mut workflow, AppCommand::ToggleStreaming) {
+            AppEvent::StreamingStopped => self.stop_streaming(),
+            AppEvent::StartRejectedNoSources => {
                 self.set_event("Select at least one source first", true);
-                return;
             }
-            self.running = true;
-            self.capture_error_streak = 0;
-            self.last_frame_at = Instant::now();
-            self.fps_window_start = Instant::now();
-            self.fps_window_frames = 0;
-            self.render_preview(ctx, true);
+            AppEvent::StreamingStarted => {
+                self.sticky_error = None;
+                self.running = workflow.running;
+                self.capture_error_streak = 0;
+                self.last_frame_at = Instant::now();
+                self.fps_window_start = Instant::now();
+                self.fps_window_frames = 0;
+                self.request_render(ctx, true, true);
+            }
+            AppEvent::VirtualOutputChanged { .. } | AppEvent::NoChange => {}
         }
     }
 
@@ -251,20 +720,20 @@ impl CameraManApp {
     /// camera open after Stop leaves its LED on and looks like spying.
     fn stop_streaming(&mut self) {
         self.running = false;
+        self.last_render_fingerprint = None;
+        self.invalidate_render_epoch();
         self.real_sources.clear();
         self.waiting_for_camera = false;
         self.measured_fps = 0.0;
         self.disconnect_virtual_output();
-        // No real sources left open: in Auto mode this drops back to DEFAULT_FPS
-        // immediately instead of showing a stale negotiated rate.
+        // No real sources left open: in Auto mode this drops back to the shared
+        // virtual-camera default instead of showing a stale negotiated rate.
         self.recompute_active_fps();
     }
 
-    /// Recomputes `active_fps` (and pushes it into the compositor/virtual
-    /// sink) from the current `fps_mode` and whichever real cameras are open
-    /// right now. Cheap: only rebuilds anything when the value actually
-    /// changed. Auto mode "catches up" a frame or two after Start, once the
-    /// capture thread(s) finish negotiating with the device(s).
+    /// Recomputes `active_fps` from the current mode and open real cameras.
+    /// The render worker receives the format with each latest-only job, so
+    /// changing this value requires no synchronous renderer or sink work.
     fn recompute_active_fps(&mut self) {
         let fps = match self.fps_mode {
             FpsMode::Fixed(fps) => fps,
@@ -273,21 +742,14 @@ impl CameraManApp {
                 .iter()
                 .filter_map(|(_, source, _)| source.negotiated_fps())
                 .max()
-                .unwrap_or(DEFAULT_FPS),
+                .unwrap_or(VIRTUAL_CAMERA_DEFAULT_FPS),
         }
-        .max(1);
+        .clamp(1, VIRTUAL_CAMERA_MAX_FPS);
 
         if fps == self.active_fps {
             return;
         }
         self.active_fps = fps;
-        self.virtual_sink.set_target_fps(fps);
-        self.compositor = Compositor::new(VideoFormat {
-            width: OUTPUT_WIDTH,
-            height: OUTPUT_HEIGHT,
-            fps,
-            pixel_format: PixelFormat::Bgra8,
-        });
     }
 
     /// Render-loop cadence derived from `active_fps`. A method, not a
@@ -312,9 +774,25 @@ impl CameraManApp {
         })
     }
 
-    fn render_preview(&mut self, ctx: &egui::Context, allow_open_camera: bool) {
+    fn request_render(
+        &mut self,
+        ctx: &egui::Context,
+        allow_open_camera: bool,
+        force_preview: bool,
+    ) {
         self.waiting_for_camera = false;
         self.recompute_active_fps();
+        let source_ids = self.selected_source_ids();
+        if source_ids.is_empty() {
+            self.invalidate_render_epoch();
+            self.preview = None;
+            self.preview_texture = None;
+            if self.running {
+                self.stop_streaming();
+                self.set_event("No sources left selected, preview stopped", true);
+            }
+            return;
+        }
         let frames = match self.input_mode {
             InputMode::Synthetic => self
                 .sources
@@ -322,50 +800,270 @@ impl CameraManApp {
                 .filter(|source| source.selected)
                 .map(|source| self.synthetic_frame(source))
                 .collect::<Result<Vec<_>, _>>(),
-            InputMode::Real => self.real_frames(allow_open_camera),
+            InputMode::Real => Ok(self.real_frames(allow_open_camera)),
         };
 
         let frames = match frames {
-            Ok(frames) if !frames.is_empty() => frames,
-            Ok(_) => {
-                self.preview = None;
-                self.preview_texture = None;
-                // Reached both before any source is ever selected (running is
-                // already false, a no-op) and if every selected real camera
-                // disappears or gets auto-dropped while running: without this,
-                // `running` stayed true with no event set and the status bar
-                // kept showing "Preview running" with nothing being captured.
-                if self.running {
-                    self.stop_streaming();
-                    self.set_event("No sources left selected, preview stopped", true);
-                }
-                return;
-            }
+            Ok(frames) => frames,
             Err(error) => {
-                self.on_capture_error(error.to_string());
+                self.invalidate_render_epoch();
+                self.on_capture_error(error.actionable_message("Prepare preview sources"));
                 return;
             }
         };
+        let prepared = self.prepare_sources(source_ids, frames);
+        let frames = prepared.frames;
 
-        if self.input_mode == InputMode::Real && frames.iter().all(Option::is_none) {
+        if self.input_mode == InputMode::Real
+            && (frames.is_empty() || frames.iter().all(Option::is_none))
+        {
             // Camera thread is still warming up (or closed): keep the previous
-            // texture on screen and report the waiting state.
-            self.waiting_for_camera = true;
+            // texture on screen and report the waiting state only for an
+            // active preview. A paused real-mode selection has not opened the
+            // device yet and must not look like a hung capture.
+            self.waiting_for_camera = self.running;
+            if prepared.suppress_output {
+                self.disconnect_virtual_output();
+            }
             return;
         }
 
-        match self.compositor.compose_captured(&frames, self.layout) {
+        let format = VideoFormat {
+            width: VIRTUAL_CAMERA_WIDTH,
+            height: VIRTUAL_CAMERA_HEIGHT,
+            fps: self.active_fps,
+            pixel_format: PixelFormat::Bgra8,
+        };
+        let live = self.running;
+        let preview_due = force_preview || self.last_preview_upload.elapsed() >= PREVIEW_INTERVAL;
+        let publish_virtual = live && self.virtual_output_enabled && !prepared.suppress_output;
+        let fingerprint = RenderFingerprint::new(
+            &frames,
+            self.layout,
+            format,
+            self.scaling_filter,
+            prepared.transforms.clone(),
+            publish_virtual,
+        );
+        if !force_preview && self.last_render_fingerprint.as_ref() == Some(&fingerprint) {
+            return;
+        }
+        self.last_render_fingerprint = Some(fingerprint);
+        self.render_worker.submit(
+            RenderJob::new(
+                frames,
+                self.layout,
+                format,
+                self.render_epoch,
+                live,
+                publish_virtual,
+                force_preview,
+            )
+            .with_scaling_filter(self.scaling_filter)
+            .with_source_transforms(prepared.transforms)
+            .with_preview_size(preview_due.then_some((PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT))),
+        );
+        ctx.request_repaint_after(WORKER_POLL_INTERVAL);
+    }
+
+    fn poll_render_result(&mut self, ctx: &egui::Context) {
+        let Some(result) = self.render_worker.take_result() else {
+            return;
+        };
+
+        self.frames_rendered = self.frames_rendered.saturating_add(result.rendered_jobs);
+        self.virtual_frames_sent = self
+            .virtual_frames_sent
+            .saturating_add(result.virtual_frames_sent);
+        self.tick = self.tick.wrapping_add(result.rendered_jobs);
+        self.update_virtual_camera_self_test(result.producer_progress, result.consumer_progress);
+        if self.running && result.live_rendered_jobs > 0 {
+            self.update_fps(result.live_rendered_jobs);
+        }
+
+        if result.epoch != self.render_epoch {
+            return;
+        }
+
+        match result.frame {
             Ok(frame) => {
-                self.tick += 1;
-                self.frames_rendered += 1;
                 self.capture_error_streak = 0;
-                self.update_texture(ctx, &frame);
-                self.send_virtual_frame(&frame);
-                self.preview = Some(frame);
+                if let Some(image) = result.preview_image {
+                    self.update_texture(ctx, image);
+                }
+                if let Some(previous) = self.preview.replace(frame) {
+                    self.render_worker.recycle_frame(previous);
+                }
             }
             Err(error) => {
-                self.set_event(error.to_string(), true);
+                self.last_render_fingerprint = None;
+                self.set_event(error.actionable_message("Compose preview"), true);
             }
+        }
+        if let Some(error) = result.transport_error {
+            self.last_render_fingerprint = None;
+            self.set_event(
+                error.actionable_message("Publish virtual camera frame"),
+                true,
+            );
+        }
+    }
+
+    fn invalidate_render_epoch(&mut self) {
+        self.render_epoch = self.render_epoch.wrapping_add(1);
+        self.last_render_fingerprint = None;
+    }
+
+    fn refresh_scene_render(&mut self, ctx: &egui::Context, change: SceneChange) {
+        let targets = change.invalidates();
+        if !targets.preview && !targets.output {
+            return;
+        }
+        if self.input_mode == InputMode::Synthetic {
+            self.real_sources.clear();
+        }
+        self.invalidate_render_epoch();
+        self.recompute_active_fps();
+        self.request_render(ctx, self.running, true);
+    }
+
+    fn start_virtual_camera_self_test(&mut self, ctx: &egui::Context) {
+        if self.running {
+            self.set_event(
+                "Stop preview before running the virtual-camera self-test",
+                true,
+            );
+            return;
+        }
+        let now = Instant::now();
+        self.virtual_camera_self_test = VirtualCameraSelfTest::Running {
+            started: now,
+            last_submit: now.checked_sub(Duration::from_secs(1)).unwrap_or(now),
+            target: None,
+        };
+        self.sticky_error = None;
+        self.drive_virtual_camera_self_test(ctx);
+    }
+
+    fn cancel_virtual_camera_self_test(&mut self, ctx: &egui::Context) {
+        if !matches!(
+            self.virtual_camera_self_test,
+            VirtualCameraSelfTest::Running { .. }
+        ) {
+            return;
+        }
+        self.virtual_camera_self_test = VirtualCameraSelfTest::Idle;
+        self.invalidate_render_epoch();
+        self.disconnect_virtual_output();
+        self.request_render(ctx, false, true);
+        self.set_event(tr(self.locale, UiText::SelfTestCancelled), false);
+    }
+
+    fn drive_virtual_camera_self_test(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
+        let (timed_out, submit_due) = match &self.virtual_camera_self_test {
+            VirtualCameraSelfTest::Running {
+                started,
+                last_submit,
+                ..
+            } => (
+                now.duration_since(*started) >= Duration::from_secs(5),
+                now.duration_since(*last_submit) >= Duration::from_millis(120),
+            ),
+            _ => return,
+        };
+        if timed_out {
+            self.virtual_camera_self_test = VirtualCameraSelfTest::Failed(String::from(
+                "No extension acknowledgement arrived within 5 seconds",
+            ));
+            self.disconnect_virtual_output();
+            self.set_event("Virtual camera self-test timed out", true);
+            return;
+        }
+        if submit_due {
+            if let VirtualCameraSelfTest::Running { last_submit, .. } =
+                &mut self.virtual_camera_self_test
+            {
+                *last_submit = now;
+            }
+            self.submit_virtual_camera_test_pattern();
+        }
+        ctx.request_repaint_after(Duration::from_millis(40));
+    }
+
+    fn submit_virtual_camera_test_pattern(&mut self) {
+        const WIDTH: u32 = 160;
+        const HEIGHT: u32 = 90;
+        const BARS: [[u8; 4]; 8] = [
+            [255, 255, 255, 255],
+            [0, 255, 255, 255],
+            [255, 255, 0, 255],
+            [0, 255, 0, 255],
+            [255, 0, 255, 255],
+            [0, 0, 255, 255],
+            [255, 0, 0, 255],
+            [0, 0, 0, 255],
+        ];
+        let mut data = Vec::with_capacity(WIDTH as usize * HEIGHT as usize * 4);
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                let mut pixel =
+                    BARS[(x as usize * BARS.len() / WIDTH as usize).min(BARS.len() - 1)];
+                if y >= HEIGHT - 12 && (x / 6 + y / 6).is_multiple_of(2) {
+                    pixel = [24, 24, 24, 255];
+                }
+                data.extend_from_slice(&pixel);
+            }
+        }
+        let frame = Frame::new_checked(WIDTH, HEIGHT, PixelFormat::Bgra8, data)
+            .expect("fixed virtual-camera test pattern is valid");
+        let captured = CapturedFrame::new(frame, FrameMetadata::new("virtual-camera-self-test", 1));
+        let format = VideoFormat {
+            width: VIRTUAL_CAMERA_WIDTH,
+            height: VIRTUAL_CAMERA_HEIGHT,
+            fps: VIRTUAL_CAMERA_DEFAULT_FPS,
+            pixel_format: PixelFormat::Bgra8,
+        };
+        self.render_worker.submit(
+            RenderJob::new(
+                vec![Some(captured)],
+                CompositionLayout::Grid,
+                format,
+                self.render_epoch,
+                false,
+                true,
+                true,
+            )
+            .with_preview_size(Some((PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT))),
+        );
+    }
+
+    fn update_virtual_camera_self_test(
+        &mut self,
+        producer: Option<ProducerProgress>,
+        consumer: Option<ConsumerProgress>,
+    ) {
+        let VirtualCameraSelfTest::Running { target, .. } = &mut self.virtual_camera_self_test
+        else {
+            return;
+        };
+        let acknowledged = consumer.filter(|consumer| {
+            target
+                .as_ref()
+                .copied()
+                .into_iter()
+                .chain(producer)
+                .any(|published| {
+                    consumer.generation == published.generation
+                        && consumer.sequence >= published.sequence
+                })
+        });
+        if let Some(consumer) = acknowledged {
+            self.virtual_camera_self_test = VirtualCameraSelfTest::Passed { consumer };
+            self.disconnect_virtual_output();
+            self.set_event("Virtual camera self-test passed", false);
+        } else if let Some(producer) = producer {
+            *target = Some(producer);
         }
     }
 
@@ -373,170 +1071,10 @@ impl CameraManApp {
         if self.capture_error_streak == 0 {
             self.set_event(message, true);
         }
-        self.capture_error_streak += 1;
-        if self.running && self.capture_error_streak >= MAX_CAPTURE_ERROR_STREAK {
-            self.stop_streaming();
-            self.set_event(
-                "Camera keeps failing, preview stopped. Check the camera and press Start to retry.",
-                true,
-            );
-        }
+        self.capture_error_streak = self.capture_error_streak.saturating_add(1);
     }
 
-    fn synthetic_frame(
-        &self,
-        source: &SourceSlot,
-    ) -> Result<Option<CapturedFrame>, camera_man::CameraManError> {
-        let bgra = animated_color(source.bgra, self.tick);
-        let mut frame_source =
-            SyntheticFrameSource::with_id(source.id, SOURCE_WIDTH, SOURCE_HEIGHT, bgra);
-        frame_source.latest_frame()
-    }
-
-    /// Returns the newest frame from every selected real camera, in
-    /// selection order (so composition order matches check order, the same
-    /// way Synthetic mode's cell order matches its fixed source list).
-    ///
-    /// Cameras are opened only when `allow_open` is true (Start pressed /
-    /// already streaming), never as a side effect of switching modes or
-    /// checking a box. A single failing camera degrades to `None` for that
-    /// cell instead of aborting the whole composite (mirrors
-    /// `PipelineEngine::render_once`); only when EVERY selected camera is
-    /// currently failing does this return `Err`, matching the old
-    /// single-camera behavior for the "camera is broken" case.
-    ///
-    /// Each source tracks its own consecutive-failure streak (the trailing
-    /// `u32` in `real_sources`). A source is auto-dropped (unchecked and
-    /// closed) once its own streak crosses `MAX_CAPTURE_ERROR_STREAK`,
-    /// mirroring the global auto-stop in `on_capture_error` but scoped to the
-    /// one broken camera instead of the whole preview. Without this, a
-    /// permanently broken secondary camera would re-post its error every
-    /// single tick forever: `set_event` always resets the message's TTL
-    /// clock, so a continuously recurring error never expires and blocks any
-    /// other status-bar message (export confirmations, etc.) from ever being
-    /// seen again.
-    fn real_frames(
-        &mut self,
-        allow_open: bool,
-    ) -> Result<Vec<Option<CapturedFrame>>, camera_man::CameraManError> {
-        // Release cameras that were unchecked (or disappeared) since the last tick.
-        self.real_sources
-            .retain(|(id, _, _)| self.selected_real_ids.contains(id));
-
-        if allow_open {
-            for id in &self.selected_real_ids {
-                if !self.real_sources.iter().any(|(sid, _, _)| sid == id) {
-                    self.real_sources
-                        .push((id.clone(), ThreadedNokhwaFrameSource::open_id(id), 0));
-                }
-            }
-        }
-
-        let mut frames = Vec::with_capacity(self.selected_real_ids.len());
-        let mut first_error = None;
-        let mut ok_count = 0;
-        // Collected during the loop and acted on after it: `real_sources` is
-        // mutably borrowed by the loop, so `self.set_event` cannot be called
-        // from inside it.
-        let mut new_failures = Vec::new();
-        let mut dropped_ids = Vec::new();
-        for id in &self.selected_real_ids {
-            let Some((_, source, streak)) =
-                self.real_sources.iter_mut().find(|(sid, _, _)| sid == id)
-            else {
-                frames.push(None);
-                continue;
-            };
-            match source.latest_frame() {
-                Ok(frame) => {
-                    *streak = 0;
-                    if frame.is_some() {
-                        ok_count += 1;
-                    }
-                    frames.push(frame);
-                }
-                Err(error) => {
-                    if *streak == 0 {
-                        new_failures.push(error.to_string());
-                    }
-                    *streak += 1;
-                    if *streak >= MAX_CAPTURE_ERROR_STREAK {
-                        dropped_ids.push(id.clone());
-                    }
-                    frames.push(None);
-                    first_error.get_or_insert(error);
-                }
-            }
-        }
-
-        if ok_count == 0 {
-            if let Some(error) = first_error {
-                return Err(error);
-            }
-        } else {
-            // Partial failure: at least one camera among several is broken.
-            // Post each newly-failing camera's message once (not every tick)
-            // so it can still expire, and let the working cameras keep
-            // composing instead of aborting the whole preview.
-            for message in new_failures {
-                self.set_event(message, true);
-            }
-            if !dropped_ids.is_empty() {
-                let dropped_count = dropped_ids.len();
-                self.selected_real_ids
-                    .retain(|id| !dropped_ids.contains(id));
-                self.real_sources
-                    .retain(|(id, _, _)| !dropped_ids.contains(id));
-                self.set_event(
-                    format!(
-                        "{dropped_count} camera(s) kept failing and were removed from the composite"
-                    ),
-                    true,
-                );
-            }
-        }
-
-        Ok(frames)
-    }
-
-    fn refresh_real_devices(&mut self, announce: bool) {
-        let discovery = NokhwaCameraDiscovery;
-        match discovery.list_devices() {
-            Ok(devices) => {
-                self.real_devices = devices;
-                let known_ids = self
-                    .real_devices
-                    .iter()
-                    .map(|device| device.id.clone())
-                    .collect::<Vec<_>>();
-                // Only drop selections/sources for cameras that actually
-                // disappeared; do not interrupt a running stream just
-                // because the user clicked Refresh.
-                self.selected_real_ids.retain(|id| known_ids.contains(id));
-                self.real_sources
-                    .retain(|(id, _, _)| known_ids.contains(id));
-                if announce {
-                    if self.real_devices.is_empty() {
-                        self.set_event("No cameras found", true);
-                    } else {
-                        self.set_event(
-                            format!("Found {} camera(s)", self.real_devices.len()),
-                            false,
-                        );
-                    }
-                }
-            }
-            Err(error) => {
-                self.real_devices.clear();
-                self.selected_real_ids.clear();
-                self.real_sources.clear();
-                self.set_event(error.to_string(), true);
-            }
-        }
-    }
-
-    fn update_texture(&mut self, ctx: &egui::Context, frame: &Frame) {
-        let image = frame_to_color_image(frame);
+    fn update_texture(&mut self, ctx: &egui::Context, image: std::sync::Arc<egui::ColorImage>) {
         match self.preview_texture.as_mut() {
             Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
             None => {
@@ -547,61 +1085,81 @@ impl CameraManApp {
                 ));
             }
         }
+        self.last_preview_upload = Instant::now();
     }
 
     fn export_preview(&mut self) {
-        match self.preview.as_ref() {
-            Some(frame) => match write_ppm(&self.export_path, frame) {
-                Ok(()) => {
-                    self.set_event(format!("Exported {}", self.export_path.display()), false);
-                }
-                Err(error) => {
-                    self.set_event(error.to_string(), true);
-                }
-            },
-            None => {
-                self.set_event("Nothing to export yet", true);
-            }
+        let Some(frame) = self.preview.clone() else {
+            self.set_event("Nothing to export yet", true);
+            return;
+        };
+        let path = self.export_path.clone();
+        match self.io_worker.start_frame_export(frame, path.clone()) {
+            Ok(true) => self.set_event(format!("Exporting {}", path.display()), false),
+            Ok(false) => self.set_event("Another file operation is already running", true),
+            Err(error) => self.set_event(
+                format!("Frame export failed. {error} Check the destination and retry."),
+                true,
+            ),
+        }
+    }
+
+    fn export_diagnostics(&mut self) {
+        let path = self.diagnostics_path.clone();
+        let diagnostics = self.redacted_diagnostics();
+        match self
+            .io_worker
+            .start_diagnostics_export(diagnostics, path.clone())
+        {
+            Ok(true) => self.set_event(
+                format!("Exporting redacted diagnostics to {}", path.display()),
+                false,
+            ),
+            Ok(false) => self.set_event("Another file operation is already running", true),
+            Err(error) => self.set_event(
+                format!("Diagnostics export failed. {error} Check the destination and retry."),
+                true,
+            ),
+        }
+    }
+
+    fn cancel_file_operation(&mut self) {
+        if self.io_worker.cancel() {
+            self.set_event("Cancelling file operation", false);
+        }
+    }
+
+    fn poll_file_operation(&mut self) {
+        let Some(result) = self.io_worker.poll() else {
+            return;
+        };
+        let description = match result.operation {
+            IoOperation::FrameExport => "Frame export",
+            IoOperation::DiagnosticsExport => "Diagnostics export",
+        };
+        match result.outcome {
+            IoOutcome::Completed => self.set_event(
+                format!("{description} completed: {}", result.path.display()),
+                false,
+            ),
+            IoOutcome::Cancelled => self.set_event(format!("{description} cancelled"), false),
+            IoOutcome::Failed(error) => self.set_event(
+                format!(
+                    "{description} failed. {error} Check the destination, permissions, and free disk space, then retry."
+                ),
+                true,
+            ),
         }
     }
 
     fn disconnect_virtual_output(&mut self) {
-        if self.virtual_connected {
-            self.virtual_sink.disconnect();
-            self.virtual_connected = false;
-        }
+        self.render_worker.disconnect_output();
     }
 
-    fn send_virtual_frame(&mut self, frame: &Frame) {
-        if !self.running || !self.virtual_output_enabled {
-            return;
-        }
-
-        if !self.virtual_connected {
-            match self.virtual_sink.connect() {
-                Ok(()) => {
-                    self.virtual_connected = true;
-                }
-                Err(error) => {
-                    self.set_event(error.to_string(), true);
-                    return;
-                }
-            }
-        }
-
-        match self.virtual_sink.send(frame) {
-            Ok(()) => {
-                self.virtual_frames_sent += 1;
-            }
-            Err(error) => {
-                self.virtual_connected = false;
-                self.set_event(error.to_string(), true);
-            }
-        }
-    }
-
-    fn update_fps(&mut self) {
-        self.fps_window_frames += 1;
+    fn update_fps(&mut self, completed_frames: u64) {
+        self.fps_window_frames = self
+            .fps_window_frames
+            .saturating_add(u32::try_from(completed_frames).unwrap_or(u32::MAX));
         let elapsed = self.fps_window_start.elapsed();
         if elapsed >= Duration::from_secs(1) {
             self.measured_fps = self.fps_window_frames as f32 / elapsed.as_secs_f32();
@@ -612,508 +1170,30 @@ impl CameraManApp {
 
     /// The always-derivable state line for the status bar (left side).
     fn state_line(&self) -> (egui::Color32, String) {
-        if let Some(event) = self.event.as_ref().filter(|event| event.is_visible()) {
-            let color = if event.is_error {
-                COLOR_ERROR
-            } else {
-                COLOR_OK
-            };
-            return (color, event.text.clone());
+        if let Some(error) = &self.sticky_error {
+            return (COLOR_ERROR, error.clone());
+        }
+        if let Some(notice) = self.notice.as_ref().filter(|notice| notice.is_visible()) {
+            return (COLOR_OK, notice.text.clone());
         }
         if self.running {
             if self.waiting_for_camera {
-                (COLOR_WARNING, String::from("Waiting for camera frame"))
+                (
+                    COLOR_WARNING,
+                    tr(self.locale, UiText::WaitingForCamera).to_owned(),
+                )
             } else {
-                (COLOR_OK, String::from("Preview running"))
+                (COLOR_OK, tr(self.locale, UiText::PreviewRunning).to_owned())
             }
         } else if self.preview.is_some() {
-            (COLOR_DIM, String::from("Paused"))
+            (COLOR_DIM, tr(self.locale, UiText::Paused).to_owned())
         } else {
-            (COLOR_DIM, String::from("Ready"))
+            (COLOR_DIM, tr(self.locale, UiText::Ready).to_owned())
         }
     }
 }
 
-impl eframe::App for CameraManApp {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.running {
-            let now = Instant::now();
-            if now.duration_since(self.last_frame_at) >= self.frame_interval() {
-                // Advance by whole intervals to hold cadence; resync when the
-                // app fell far behind (window hidden, heavy load).
-                let interval = self.frame_interval();
-                self.last_frame_at += interval;
-                if now.duration_since(self.last_frame_at) > interval * 3 {
-                    self.last_frame_at = now;
-                }
-                self.render_preview(ctx, true);
-                self.update_fps();
-            }
-            let interval = self.frame_interval();
-            let until_next =
-                interval.saturating_sub(Instant::now().duration_since(self.last_frame_at));
-            ctx.request_repaint_after(until_next.min(interval));
-        } else if self.event.as_ref().is_some_and(StatusEvent::is_visible) {
-            // Keep repainting until the transient event expires from the status bar.
-            ctx.request_repaint_after(Duration::from_millis(250));
-        }
-
-        // The extension activation delegate updates its status from an
-        // async macOS callback; poll for it even while paused so approving
-        // it in System Settings is reflected without needing to click anything.
-        if matches!(
-            self.extension_installer.status(),
-            ExtensionActivationStatus::Requesting | ExtensionActivationStatus::NeedsApproval
-        ) {
-            ctx.request_repaint_after(Duration::from_millis(500));
-        }
-
-        // Space toggles Start/Stop when no widget wants the keyboard.
-        if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
-            self.toggle_running(ctx);
-        }
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        let full_rect = ui.max_rect();
-        ui.painter().rect_filled(full_rect, 0.0, COLOR_WINDOW);
-
-        let status_height = 36.0;
-        let main_height = (ui.available_height() - status_height).max(1.0);
-
-        ui.vertical(|ui| {
-            ui.set_width(full_rect.width());
-            ui.horizontal(|ui| {
-                ui.set_height(main_height);
-                ui.vertical(|ui| {
-                    ui.set_width(304.0);
-                    ui.set_height(main_height);
-                    self.controls_ui(ui, &ctx);
-                });
-
-                ui.separator();
-
-                ui.vertical_centered(|ui| {
-                    ui.set_width((full_rect.width() - 320.0).max(1.0));
-                    ui.set_height(main_height);
-                    self.preview_ui(ui);
-                });
-            });
-
-            ui.separator();
-            self.status_ui(ui);
-        });
-    }
-}
-
-/// Whether this run can plausibly activate the system extension: launched
-/// from an installed `.app` bundle (macOS looks for extensions under
-/// `Contents/Library/SystemExtensions` of the *running* application, so a
-/// bare `cargo run` binary never qualifies) AND that bundle was actually
-/// signed with `com.apple.developer.system-extension.install` (an ad-hoc or
-/// plain-signed bundle launches fine but can never activate anything; see
-/// `bundle_app` in main.rs). Reads the bundle's own entitlements via
-/// `codesign` rather than guessing from how it was built, so it reflects
-/// reality. Computed once at startup, not per frame: this only gates a UI
-/// hint and does not need to react to the bundle being re-signed while the
-/// app is already running.
-fn extension_capable() -> bool {
-    let Some(bundle) = current_app_bundle_path() else {
-        return false;
-    };
-    std::process::Command::new("codesign")
-        .args(["--display", "--entitlements", "-", "--xml"])
-        .arg(&bundle)
-        .output()
-        .is_ok_and(|output| {
-            output.status.success()
-                && provisioning::decoded_entitlements_grant(
-                    &output.stdout,
-                    SYSTEM_EXTENSION_INSTALL_ENTITLEMENT,
-                )
-        })
-}
-
-/// The `.app` bundle containing the running executable (e.g.
-/// `/Applications/CameraMan.app`), or `None` for a bare binary such as
-/// `cargo run`'s `target/debug/camera-man`.
-fn current_app_bundle_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let macos_dir = exe.parent()?;
-    (macos_dir.file_name()? == "MacOS").then_some(())?;
-    let contents_dir = macos_dir.parent()?;
-    (contents_dir.file_name()? == "Contents").then_some(())?;
-    let bundle = contents_dir.parent()?;
-    (bundle.extension()? == "app").then(|| bundle.to_path_buf())
-}
-
-impl CameraManApp {
-    /// Scrolls when the window is near `with_min_inner_size`: the control
-    /// column has grown (Target FPS, Install extension) since the fixed
-    /// 304px-wide / full-height layout in `ui()` was first sized, and a
-    /// non-scrolling column would clip or overlap the status bar instead of
-    /// making everything reachable.
-    fn controls_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| self.controls_ui_inner(ui, ctx));
-    }
-
-    fn controls_ui_inner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.add_space(8.0);
-        ui.heading("CameraMan");
-        ui.label(egui::RichText::new("Multi-camera preview").color(COLOR_DIM));
-        ui.add_space(16.0);
-
-        ui.label("Sources");
-        let mut mode_changed = false;
-        ui.horizontal(|ui| {
-            mode_changed |= ui
-                .selectable_value(&mut self.input_mode, InputMode::Synthetic, "Synthetic")
-                .changed();
-            mode_changed |= ui
-                .selectable_value(&mut self.input_mode, InputMode::Real, "Real")
-                .changed();
-        });
-        if mode_changed {
-            // Leaving Real mode must release the camera; entering it must not
-            // grab the camera until the user explicitly starts the preview.
-            self.stop_streaming();
-            self.render_preview(ctx, false);
-        }
-
-        ui.add_space(8.0);
-        match self.input_mode {
-            InputMode::Synthetic => {
-                let mut source_changed = false;
-                for source in &mut self.sources {
-                    ui.horizontal(|ui| {
-                        let (swatch, _) =
-                            ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                        ui.painter().rect_filled(
-                            swatch,
-                            3.0,
-                            egui::Color32::from_rgb(source.bgra[2], source.bgra[1], source.bgra[0]),
-                        );
-                        source_changed |= ui.checkbox(&mut source.selected, source.name).changed();
-                    });
-                }
-                if source_changed {
-                    self.render_preview(ctx, false);
-                }
-            }
-            InputMode::Real => {
-                if ui
-                    .add_sized([190.0, 30.0], egui::Button::new("Refresh cameras"))
-                    .clicked()
-                {
-                    self.refresh_real_devices(true);
-                }
-
-                if self.real_devices.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No cameras found. Connect one and refresh.")
-                            .color(COLOR_DIM),
-                    );
-                }
-                let mut selection_changed = false;
-                for device in &self.real_devices {
-                    let mut checked = self.selected_real_ids.contains(&device.id);
-                    if ui.checkbox(&mut checked, &device.name).changed() {
-                        if checked {
-                            self.selected_real_ids.push(device.id.clone());
-                        } else {
-                            self.selected_real_ids.retain(|id| id != &device.id);
-                        }
-                        selection_changed = true;
-                    }
-                }
-                if selection_changed {
-                    // real_frames() prunes real_sources for anything no longer
-                    // selected and only opens newly-checked cameras when
-                    // allow_open (i.e. self.running) is true, so unrelated
-                    // already-open cameras are left untouched here.
-                    self.render_preview(ctx, self.running);
-                }
-            }
-        }
-
-        ui.add_space(16.0);
-        ui.label("Layout");
-        let previous_layout = self.layout;
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.layout, CompositionLayout::Grid, "Grid");
-            ui.selectable_value(&mut self.layout, CompositionLayout::Row, "Row");
-            ui.selectable_value(&mut self.layout, CompositionLayout::Column, "Column");
-        });
-        if previous_layout != self.layout {
-            self.render_preview(ctx, false);
-        }
-
-        ui.add_space(16.0);
-        ui.label("Target FPS");
-        let previous_fps_mode = self.fps_mode;
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.fps_mode, FpsMode::Auto, "Auto");
-            for &preset in &FPS_PRESETS {
-                ui.selectable_value(
-                    &mut self.fps_mode,
-                    FpsMode::Fixed(preset),
-                    preset.to_string(),
-                );
-            }
-        });
-        if previous_fps_mode != self.fps_mode {
-            self.recompute_active_fps();
-            self.render_preview(ctx, false);
-        }
-        if self.fps_mode == FpsMode::Auto {
-            ui.label(
-                egui::RichText::new(format!(
-                    "Auto -> {} fps (highest negotiated across selected cameras)",
-                    self.active_fps
-                ))
-                .color(COLOR_DIM)
-                .small(),
-            );
-        } else if let Some(warning) = self.fixed_fps_warning() {
-            ui.label(egui::RichText::new(warning).color(COLOR_WARNING).small());
-        }
-
-        ui.add_space(16.0);
-        ui.horizontal(|ui| {
-            let (label, fill) = if self.running {
-                ("Stop", COLOR_STOP)
-            } else {
-                ("Start", COLOR_ACCENT)
-            };
-            let start_button = egui::Button::new(
-                egui::RichText::new(label)
-                    .strong()
-                    .color(egui::Color32::WHITE),
-            )
-            .fill(fill);
-            let can_start = self.running || self.selected_count() > 0;
-            if ui
-                .add_enabled_ui(can_start, |ui| ui.add_sized([92.0, 34.0], start_button))
-                .inner
-                .on_hover_text("Space")
-                .on_disabled_hover_text("Select at least one source")
-                .clicked()
-            {
-                self.toggle_running(ctx);
-            }
-
-            let render_enabled = !self.running && self.input_mode == InputMode::Synthetic;
-            if ui
-                .add_enabled_ui(render_enabled, |ui| {
-                    ui.add_sized([92.0, 34.0], egui::Button::new("Render"))
-                })
-                .inner
-                .on_hover_text("Render a single frame")
-                .on_disabled_hover_text(if self.running {
-                    "Already rendering continuously"
-                } else {
-                    "Use Start for the live camera preview"
-                })
-                .clicked()
-            {
-                self.render_preview(ctx, false);
-            }
-        });
-
-        ui.add_space(8.0);
-        let export_button = egui::Button::new("Export PPM");
-        if ui
-            .add_enabled_ui(self.preview.is_some(), |ui| {
-                ui.add_sized([190.0, 34.0], export_button)
-            })
-            .inner
-            .on_disabled_hover_text("Nothing to export yet")
-            .clicked()
-        {
-            self.export_preview();
-        }
-
-        ui.add_space(16.0);
-        ui.separator();
-        ui.add_space(12.0);
-        ui.label("Output");
-        ui.monospace(format!(
-            "{}x{} BGRA @ {} fps",
-            OUTPUT_WIDTH, OUTPUT_HEIGHT, self.active_fps
-        ));
-        ui.monospace(self.export_path.display().to_string());
-        ui.add_space(4.0);
-        if ui
-            .checkbox(&mut self.virtual_output_enabled, "Virtual camera output")
-            .changed()
-            && !self.virtual_output_enabled
-        {
-            self.disconnect_virtual_output();
-        }
-        ui.monospace(self.virtual_sink.path().display().to_string());
-        ui.add_space(4.0);
-        let virtual_label = if self.virtual_output_enabled {
-            "Virtual camera output: enabled"
-        } else {
-            "Virtual camera output: off"
-        };
-        ui.label(egui::RichText::new(virtual_label).color(COLOR_DIM).small());
-
-        ui.add_space(16.0);
-        ui.separator();
-        ui.add_space(12.0);
-        ui.label("System Extension");
-        let capable = self.extension_capable;
-        let extension_status = self.extension_installer.status();
-        let can_request = capable && self.extension_installer.can_activate();
-        let button_label = match extension_status {
-            ExtensionActivationStatus::Idle => "Install extension",
-            ExtensionActivationStatus::Requesting => "Requesting...",
-            ExtensionActivationStatus::NeedsApproval => "Awaiting approval",
-            ExtensionActivationStatus::Activated => "Installed",
-            ExtensionActivationStatus::WillCompleteAfterReboot => "Restart required",
-            ExtensionActivationStatus::Failed(_) => "Retry activation",
-        };
-        if ui
-            .add_enabled_ui(can_request, |ui| {
-                ui.add_sized([190.0, 30.0], egui::Button::new(button_label))
-            })
-            .inner
-            .on_hover_text(
-                "Requests macOS activation of the CameraMan Virtual Camera system extension.",
-            )
-            .on_disabled_hover_text(if !capable {
-                "Only works when the app is signed with the system-extension.install entitlement \
-                 and launched from an installed /Applications bundle. Build with CODESIGN_IDENTITY \
-                 and CAMERAMAN_PROVISIONING_PROFILE set, then `cargo run -- bundle`, copy \
-                 target/CameraMan.app to /Applications, and launch it from there."
-            } else {
-                "The current activation request must finish before another request can start."
-            })
-            .clicked()
-        {
-            self.extension_installer.activate();
-        }
-        if !capable {
-            ui.label(
-                egui::RichText::new("Unavailable: not signed for system-extension activation")
-                    .color(COLOR_DIM)
-                    .small(),
-            );
-        }
-        let extension_color = match extension_status {
-            ExtensionActivationStatus::Activated
-            | ExtensionActivationStatus::WillCompleteAfterReboot => COLOR_OK,
-            ExtensionActivationStatus::NeedsApproval => COLOR_WARNING,
-            ExtensionActivationStatus::Failed(_) => COLOR_ERROR,
-            ExtensionActivationStatus::Requesting => COLOR_ACCENT,
-            ExtensionActivationStatus::Idle => COLOR_DIM,
-        };
-        ui.horizontal(|ui| {
-            if extension_status == ExtensionActivationStatus::Requesting {
-                ui.add(egui::Spinner::new().size(12.0));
-            }
-            ui.label(
-                egui::RichText::new(extension_status.to_string())
-                    .color(extension_color)
-                    .small(),
-            );
-        });
-    }
-
-    fn preview_ui(&self, ui: &mut egui::Ui) {
-        let available = ui.available_size();
-        let target_ratio = OUTPUT_WIDTH as f32 / OUTPUT_HEIGHT as f32;
-        let mut preview_size = egui::vec2(available.x, available.x / target_ratio);
-        if preview_size.y > available.y {
-            preview_size.y = available.y;
-            preview_size.x = available.y * target_ratio;
-        }
-        preview_size.x = preview_size.x.max(1.0);
-        preview_size.y = preview_size.y.max(1.0);
-
-        ui.add_space(((available.y - preview_size.y) / 2.0).max(0.0));
-        let (rect, _) = ui.allocate_exact_size(preview_size, egui::Sense::hover());
-        ui.painter().rect_filled(rect, 4.0, egui::Color32::BLACK);
-        if let Some(texture) = &self.preview_texture {
-            ui.painter().image(
-                texture.id(),
-                rect,
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
-            self.paint_preview_badges(ui, rect);
-        } else {
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "No preview yet.\nSelect sources and press Start.",
-                egui::FontId::proportional(15.0),
-                COLOR_DIM,
-            );
-        }
-    }
-
-    /// Small overlay in the preview corner: live indicator plus source mode,
-    /// so a screenshot of the window can never be mistaken for a real stream.
-    fn paint_preview_badges(&self, ui: &egui::Ui, rect: egui::Rect) {
-        let painter = ui.painter();
-        let mode = match self.input_mode {
-            InputMode::Synthetic => "SYNTHETIC",
-            InputMode::Real => "REAL",
-        };
-        let state = if self.running { "LIVE" } else { "PAUSED" };
-        let text = format!("{state} · {mode}");
-        let font = egui::FontId::proportional(12.0);
-
-        let galley = painter.layout_no_wrap(text, font, egui::Color32::WHITE);
-        let padding = egui::vec2(8.0, 4.0);
-        let dot_space = 12.0;
-        let badge = egui::Rect::from_min_size(
-            rect.min + egui::vec2(10.0, 10.0),
-            galley.size() + padding * 2.0 + egui::vec2(dot_space, 0.0),
-        );
-        painter.rect_filled(badge, 4.0, egui::Color32::from_black_alpha(160));
-        let dot_center = egui::pos2(badge.min.x + padding.x + 3.0, badge.center().y);
-        let dot_color = if self.running { COLOR_ERROR } else { COLOR_DIM };
-        painter.circle_filled(dot_center, 3.0, dot_color);
-        painter.galley(
-            egui::pos2(badge.min.x + padding.x + dot_space, badge.min.y + padding.y),
-            galley,
-            egui::Color32::WHITE,
-        );
-    }
-
-    fn status_ui(&self, ui: &mut egui::Ui) {
-        ui.horizontal_centered(|ui| {
-            let (color, text) = self.state_line();
-            ui.painter().circle_filled(
-                ui.cursor().min + egui::vec2(4.0, ui.available_height() / 2.0),
-                4.0,
-                color,
-            );
-            ui.add_space(14.0);
-            ui.label(egui::RichText::new(text).color(color));
-            ui.separator();
-            if self.running && self.measured_fps > 0.0 {
-                ui.label(format!("{:.0} fps", self.measured_fps));
-                ui.separator();
-            }
-            ui.label(format!("sources {}", self.selected_count()));
-            ui.separator();
-            ui.label(format!("frames {}", self.frames_rendered));
-            ui.separator();
-            ui.label(format!("virtual {}", self.virtual_frames_sent));
-            ui.separator();
-            ui.label(format!("layout {}", self.layout.name()));
-        });
-    }
-}
-
-fn configure_style(ctx: &egui::Context) {
+fn configure_style(ctx: &egui::Context, high_contrast: bool) {
     ctx.set_visuals(egui::Visuals::dark());
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
@@ -1123,21 +1203,20 @@ fn configure_style(ctx: &egui::Context) {
         style.visuals.widgets.inactive.bg_fill = COLOR_WIDGET;
         style.visuals.widgets.hovered.bg_fill = COLOR_WIDGET_HOVER;
         style.visuals.widgets.active.bg_fill = COLOR_WIDGET_ACTIVE;
+        if high_contrast {
+            style.visuals.override_text_color = Some(egui::Color32::WHITE);
+            style.visuals.selection.bg_fill = COLOR_FOCUS;
+            style.visuals.selection.stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
+            style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.5, egui::Color32::WHITE);
+            style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
+        }
     });
 }
 
-fn frame_to_color_image(frame: &Frame) -> egui::ColorImage {
-    let mut rgba = Vec::with_capacity(frame.data().len());
-    for pixel in frame.data().chunks_exact(4) {
-        rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+fn animated_color(base: [u8; 4], tick: u64, reduce_motion: bool) -> [u8; 4] {
+    if reduce_motion {
+        return base;
     }
-    egui::ColorImage::from_rgba_unmultiplied(
-        [frame.width() as usize, frame.height() as usize],
-        &rgba,
-    )
-}
-
-fn animated_color(base: [u8; 4], tick: u64) -> [u8; 4] {
     let wave = ((tick % 60) as i16 - 30).unsigned_abs() as i16;
     [
         base[0].saturating_add((wave / 4) as u8),
@@ -1145,4 +1224,120 @@ fn animated_color(base: [u8; 4], tick: u64) -> [u8; 4] {
         base[2].saturating_add((wave / 6) as u8),
         base[3],
     ]
+}
+
+fn move_item<T>(items: &mut [T], from: usize, to: usize) -> bool {
+    if from == to || from >= items.len() || to >= items.len() {
+        return false;
+    }
+    items.swap(from, to);
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_bundle_path_is_derived_only_from_a_contents_macos_executable() {
+        assert_eq!(
+            app_bundle_path_for_executable(Path::new(
+                "/Applications/CameraMan.app/Contents/MacOS/CameraMan"
+            )),
+            Some(PathBuf::from("/Applications/CameraMan.app"))
+        );
+        assert_eq!(
+            app_bundle_path_for_executable(Path::new("target/debug/camera-man")),
+            None
+        );
+        assert_eq!(
+            app_bundle_path_for_executable(Path::new(
+                "/Applications/CameraMan/Contents/MacOS/CameraMan"
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn extension_activation_location_requires_an_applications_directory() {
+        assert!(app_bundle_has_activation_location(Path::new(
+            "/Applications/CameraMan.app"
+        )));
+        assert!(!app_bundle_has_activation_location(Path::new(
+            "/System/Applications/CameraMan.app"
+        )));
+        assert!(!app_bundle_has_activation_location(Path::new(
+            "/Users/example/project/target/CameraMan.app"
+        )));
+        assert!(!app_bundle_has_activation_location(Path::new(
+            "/tmp/Applications/CameraMan.app"
+        )));
+    }
+
+    #[test]
+    fn reorder_swaps_only_valid_distinct_items() {
+        let mut items = vec!["one", "two", "three"];
+
+        assert!(move_item(&mut items, 2, 1));
+        assert_eq!(items, ["one", "three", "two"]);
+        assert!(!move_item(&mut items, 1, 1));
+        assert!(!move_item(&mut items, 3, 0));
+    }
+
+    #[test]
+    fn render_fingerprint_deduplicates_only_the_same_capture_and_configuration() {
+        let format = VideoFormat::hd_1080p_bgra();
+        let frame = Frame::solid_bgra(2, 2, [1, 2, 3, 255]).unwrap();
+        let first = CapturedFrame::new(frame.clone(), FrameMetadata::new("camera", 7));
+        let next = CapturedFrame::new(frame, FrameMetadata::new("camera", 8));
+        let fingerprint = |frame: CapturedFrame, publish_virtual| {
+            RenderFingerprint::new(
+                &[Some(frame)],
+                CompositionLayout::Grid,
+                format,
+                ScalingFilter::Nearest,
+                vec![SourceTransform::default()],
+                publish_virtual,
+            )
+        };
+
+        let baseline = fingerprint(first.clone(), true);
+        assert!(baseline == fingerprint(first.clone(), true));
+        assert!(baseline != fingerprint(next, true));
+        assert!(baseline != fingerprint(first, false));
+    }
+
+    #[test]
+    fn activation_metadata_requires_mach_service_and_usage_description() {
+        let valid = plist::Value::from_reader_xml(
+            br#"<plist version="1.0"><dict>
+                <key>CMIOExtension</key><dict>
+                    <key>CMIOExtensionMachServiceName</key>
+                    <string>TEAM.group.cmio</string>
+                </dict>
+                <key>NSSystemExtensionUsageDescription</key>
+                <string>Virtual camera</string>
+                <key>CameraManAppGroup</key>
+                <string>TEAM.group</string>
+            </dict></plist>"#
+                .as_slice(),
+        )
+        .unwrap();
+        let missing_usage = plist::Value::from_reader_xml(
+            br#"<plist version="1.0"><dict>
+                <key>CMIOExtension</key><dict>
+                    <key>CMIOExtensionMachServiceName</key>
+                    <string>TEAM.group.cmio</string>
+                </dict>
+            </dict></plist>"#
+                .as_slice(),
+        )
+        .unwrap();
+
+        let metadata = extension_activation_metadata_from_value(&valid).unwrap();
+        assert_eq!(metadata.mach_service_name, "TEAM.group.cmio");
+        assert_eq!(metadata.usage_description, "Virtual camera");
+        assert_eq!(metadata.application_group.as_deref(), Some("TEAM.group"));
+        assert!(extension_activation_metadata_from_value(&missing_usage).is_err());
+    }
 }

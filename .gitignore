@@ -1,6 +1,19 @@
 /target
 /build
+/tools/*/target
+/fuzz/artifacts
+/fuzz/corpus
+/fuzz/target
 /.idea
 .DS_Store
+__pycache__/
+*.py[cod]
 # Private keys, CSRs, certs, and provisioning profiles: never commit these.
 /signing
+*.key
+*.p12
+*.cer
+*.csr
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile

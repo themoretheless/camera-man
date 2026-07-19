@@ -3,6 +3,18 @@ name = "camera-man"
 version = "0.1.0"
 edition = "2024"
 default-run = "camera-man"
+description = "Rust-only macOS camera compositor and CoreMediaIO virtual camera"
+repository = "https://github.com/themoretheless/camera-man"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["camera", "coremediaio", "macos", "video"]
+categories = ["multimedia::video"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
 
 [lib]
 name = "camera_man"
@@ -11,20 +23,67 @@ path = "src/lib.rs"
 [[bin]]
 name = "camera-man"
 path = "src/main.rs"
+required-features = ["camera-capture"]
 
 [[bin]]
 name = "cameraman-extension"
 path = "src/extension_main.rs"
 
+[[bench]]
+name = "compositor"
+harness = false
+
+[[bench]]
+name = "resize_backends"
+harness = false
+required-features = ["resize-experiments"]
+
+[[bench]]
+name = "gpu_compositor"
+harness = false
+required-features = ["gpu-compositor-experiment"]
+
+[features]
+default = ["camera-capture"]
+camera-capture = ["dep:nokhwa"]
+parallel-compositor = ["dep:rayon"]
+resize-experiments = ["dep:fast_image_resize"]
+gpu-compositor-experiment = ["dep:pollster", "dep:wgpu"]
+linear-light-experiment = []
+metal-interop-experiment = ["dep:objc2-metal"]
+all-experiments = [
+    "parallel-compositor",
+    "resize-experiments",
+    "gpu-compositor-experiment",
+    "linear-light-experiment",
+    "metal-interop-experiment",
+]
+
 [dependencies]
-eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "glow"] }
-nokhwa = { version = "0.10.11", default-features = false, features = ["decoding", "input-native"] }
+eframe = { version = "0.35.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+libc = "0.2.186"
+nokhwa = { version = "0.10.11", default-features = false, features = ["decoding", "input-native"], optional = true }
 plist = "1.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1.44"
+fast_image_resize = { version = "6.0.0", default-features = false, features = ["std", "only_u8x4"], optional = true }
+pollster = { version = "1.0.1", optional = true }
+rayon = { version = "1.12.0", optional = true }
+wgpu = { version = "30.0.0", default-features = false, features = ["std", "metal", "wgsl"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", features = ["NSAccessibility", "NSWorkspace"] }
 objc2-core-foundation = "0.3.2"
 objc2-core-media = "0.3.2"
 objc2-core-media-io = "0.3.2"
 objc2-core-video = "0.3.2"
-objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSDictionary", "NSError", "NSObject", "NSSet", "NSString", "NSUUID", "NSValue"] }
+objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSDictionary", "NSError", "NSFileManager", "NSObject", "NSSet", "NSString", "NSURL", "NSUUID", "NSValue"] }
+objc2-metal = { version = "0.3.2", optional = true }
 objc2-system-extensions = "0.3.2"
 dispatch2 = "0.3.1"
+
+[dev-dependencies]
+loom = "0.7.2"

@@ -1,0 +1,49 @@
+[graph]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+ignore = [
+  { id = "RUSTSEC-2024-0436", reason = "paste is transitive through latest nokhwa; no patched compatible release exists; tracked in docs/dependency-exceptions.md" },
+  { crate = "spin@0.9.8", reason = "yanked transitive flume version from latest nokhwa; no compatible lockfile replacement exists; tracked in docs/dependency-exceptions.md" },
+]
+
+[licenses]
+confidence-threshold = 0.93
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "IJG",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "OFL-1.1",
+  "Ubuntu-font-1.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+deny = [
+  { crate = "openssl-sys", reason = "CameraMan has no network TLS requirement; native OpenSSL expands the release surface" },
+  { crate = "tokio", reason = "Owned bounded frame workers are the architecture decision until measured async I/O requires a runtime" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,21 @@
+# CameraMan Third-Party Notices
+
+This file is generated from the locked Cargo dependency graph. Do not edit it
+by hand; run `scripts/generate-third-party-notices.sh`.
+
+## Components
+
+{{#each crates}}
+- [{{package.name}} {{package.version}}]({{#if package.repository}}{{package.repository}}{{else}}https://crates.io/crates/{{package.name}}{{/if}}): {{license}}
+{{/each}}
+
+## License Texts
+
+{{#each overview}}
+### {{name}}
+
+```text
+{{text}}
+```
+
+{{/each}}

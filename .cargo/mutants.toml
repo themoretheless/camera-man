@@ -1,0 +1,14 @@
+examine_globs = [
+  "src/shared_memory_transport/**/*.rs",
+  "src/provisioning_profile.rs",
+  "src/render.rs",
+]
+exclude_globs = [
+  "src/shared_memory_transport/tests.rs",
+]
+additional_cargo_args = ["--locked", "--no-default-features"]
+build_timeout_multiplier = 3.0
+timeout_multiplier = 3.0
+minimum_test_timeout = 60.0
+output = "mutants.out"
+test_tool = "cargo"

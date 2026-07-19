@@ -1,19 +1,32 @@
-use plist::{Dictionary, Value};
+use camera_man::provisioning_profile::{self, ProfileMetadata};
+pub(crate) use camera_man::provisioning_profile::{
+    decoded_entitlement_strings, decoded_entitlements_grant,
+};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const APP_IDENTIFIER_KEYS: [&str; 2] =
-    ["application-identifier", "com.apple.application-identifier"];
+#[cfg(test)]
+const APPLICATION_GROUPS_ENTITLEMENT: &str = "com.apple.security.application-groups";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ValidatedProvisioningProfile {
     path: PathBuf,
+    team_identifier: Option<String>,
+    application_groups: Vec<String>,
 }
 
 impl ValidatedProvisioningProfile {
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(crate) fn team_identifier(&self) -> Option<&str> {
+        self.team_identifier.as_deref()
+    }
+
+    pub(crate) fn application_groups(&self) -> &[String] {
+        &self.application_groups
     }
 }
 
@@ -40,10 +53,13 @@ pub(crate) fn validate(
         .into());
     }
 
-    validate_decoded_profile(&output.stdout, path, app_bundle_id, required_entitlement)?;
+    let metadata =
+        validate_decoded_profile(&output.stdout, path, app_bundle_id, required_entitlement)?;
 
     Ok(ValidatedProvisioningProfile {
         path: path.to_path_buf(),
+        team_identifier: metadata.team_identifier,
+        application_groups: metadata.application_groups,
     })
 }
 
@@ -52,79 +68,9 @@ fn validate_decoded_profile(
     path: &Path,
     app_bundle_id: &str,
     required_entitlement: &str,
-) -> Result<(), Box<dyn Error>> {
-    let profile = Value::from_reader_xml(decoded).map_err(|error| -> Box<dyn Error> {
-        format!(
-            "decoded provisioning profile {} is not a valid plist: {error}",
-            path.display()
-        )
-        .into()
-    })?;
-    let Some(root) = profile.as_dictionary() else {
-        return Err(format!(
-            "decoded provisioning profile {} has a non-dictionary root",
-            path.display()
-        )
-        .into());
-    };
-    let entitlements = profile_entitlements(root, path)?;
-
-    if !dictionary_grants(entitlements, required_entitlement) {
-        return Err(format!(
-            "provisioning profile {} does not grant {required_entitlement}",
-            path.display()
-        )
-        .into());
-    }
-
-    let app_identifiers = APP_IDENTIFIER_KEYS
-        .iter()
-        .filter_map(|key| entitlements.get(key).and_then(Value::as_string))
-        .collect::<Vec<_>>();
-    let expected_suffix = format!(".{app_bundle_id}");
-    if !app_identifiers
-        .iter()
-        .any(|identifier| *identifier == app_bundle_id || identifier.ends_with(&expected_suffix))
-    {
-        return Err(format!(
-            "provisioning profile {} does not match app bundle id {app_bundle_id}; found application identifiers: {}",
-            path.display(),
-            if app_identifiers.is_empty() {
-                String::from("<none>")
-            } else {
-                app_identifiers.join(", ")
-            }
-        )
-        .into());
-    }
-
-    Ok(())
-}
-
-pub(crate) fn decoded_entitlements_grant(decoded: &[u8], entitlement: &str) -> bool {
-    Value::from_reader_xml(decoded)
-        .ok()
-        .and_then(Value::into_dictionary)
-        .is_some_and(|entitlements| dictionary_grants(&entitlements, entitlement))
-}
-
-fn dictionary_grants(dictionary: &Dictionary, entitlement: &str) -> bool {
-    dictionary.get(entitlement).and_then(Value::as_boolean) == Some(true)
-}
-
-fn profile_entitlements<'a>(
-    root: &'a Dictionary,
-    path: &Path,
-) -> Result<&'a Dictionary, Box<dyn Error>> {
-    root.get("Entitlements")
-        .and_then(Value::as_dictionary)
-        .ok_or_else(|| {
-            format!(
-                "decoded provisioning profile {} has no Entitlements dictionary",
-                path.display()
-            )
-            .into()
-        })
+) -> Result<ProfileMetadata, Box<dyn Error>> {
+    provisioning_profile::validate_decoded_profile(decoded, app_bundle_id, required_entitlement)
+        .map_err(|error| format!("provisioning profile {}: {error}", path.display()).into())
 }
 
 #[cfg(test)]
@@ -245,7 +191,108 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn extracts_explicit_profile_team_identifier() {
+        let metadata = validate_xml_metadata(&profile_xml(
+            "application-identifier",
+            "TEAM123456.com.cameraman.rust",
+            "<true/>",
+        ))
+        .unwrap();
+
+        assert_eq!(metadata.team_identifier.as_deref(), Some("TEAM123456"));
+    }
+
+    #[test]
+    fn rejects_conflicting_team_identifiers() {
+        let xml = format!(
+            r#"
+<plist version="1.0">
+<dict>
+  <key>TeamIdentifier</key>
+  <array><string>OTHERTEAM</string></array>
+  <key>Entitlements</key>
+  <dict>
+    <key>com.apple.developer.team-identifier</key>
+    <string>TEAM123456</string>
+    <key>application-identifier</key>
+    <string>TEAM123456.com.cameraman.rust</string>
+    <key>{INSTALL_ENTITLEMENT}</key>
+    <true/>
+  </dict>
+</dict>
+</plist>
+"#
+        );
+
+        let error = validate_xml_metadata(&xml).unwrap_err().to_string();
+        assert!(error.contains("conflicting Team IDs"));
+        assert!(error.contains("OTHERTEAM"));
+        assert!(error.contains("TEAM123456"));
+    }
+
+    #[test]
+    fn extracts_and_deduplicates_application_groups() {
+        let xml = format!(
+            r#"
+<plist version="1.0">
+<dict>
+  <key>TeamIdentifier</key>
+  <array><string>TEAM123456</string></array>
+  <key>Entitlements</key>
+  <dict>
+    <key>application-identifier</key>
+    <string>TEAM123456.com.cameraman.rust</string>
+    <key>{INSTALL_ENTITLEMENT}</key>
+    <true/>
+    <key>{APPLICATION_GROUPS_ENTITLEMENT}</key>
+    <array>
+      <string>TEAM123456.com.cameraman.shared</string>
+      <string>TEAM123456.com.cameraman.shared</string>
+    </array>
+  </dict>
+</dict>
+</plist>
+"#
+        );
+
+        let metadata = validate_xml_metadata(&xml).unwrap();
+        assert_eq!(
+            metadata.application_groups,
+            ["TEAM123456.com.cameraman.shared"]
+        );
+    }
+
+    #[test]
+    fn rejects_non_array_application_groups() {
+        let xml = format!(
+            r#"
+<plist version="1.0">
+<dict>
+  <key>Entitlements</key>
+  <dict>
+    <key>application-identifier</key>
+    <string>TEAM123456.com.cameraman.rust</string>
+    <key>{INSTALL_ENTITLEMENT}</key>
+    <true/>
+    <key>{APPLICATION_GROUPS_ENTITLEMENT}</key>
+    <string>TEAM123456.com.cameraman.shared</string>
+  </dict>
+</dict>
+</plist>
+"#
+        );
+
+        let error = validate_xml_metadata(&xml).unwrap_err().to_string();
+        assert!(error.contains(APPLICATION_GROUPS_ENTITLEMENT));
+        assert!(error.contains("expected an array"));
+    }
+
     fn validate_xml(xml: &str) -> Result<(), Box<dyn Error>> {
+        validate_xml_metadata(xml).map(|_| ())
+    }
+
+    fn validate_xml_metadata(xml: &str) -> Result<ProfileMetadata, Box<dyn Error>> {
         validate_decoded_profile(
             xml.as_bytes(),
             Path::new(TEST_PATH),
@@ -259,6 +306,8 @@ mod tests {
             r#"
 <plist version="1.0">
 <dict>
+  <key>TeamIdentifier</key>
+  <array><string>TEAM123456</string></array>
   <key>Entitlements</key>
   <dict>
     <key>{identifier_key}</key>

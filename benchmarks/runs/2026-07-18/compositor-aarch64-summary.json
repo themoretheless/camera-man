@@ -1,0 +1,308 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-18",
+  "hardware": "aarch64 | Apple M4 Max",
+  "target_arch": "aarch64",
+  "os_version": "26.6",
+  "compiler": "rustc 1.98.0-nightly (57d06900f 2026-05-27)",
+  "power_source": "Battery Power",
+  "comparable_to_ac_baseline": false,
+  "process_runs": 3,
+  "iterations_per_case_per_run": 100,
+  "warmup_iterations": 5,
+  "case_rotations": [
+    0,
+    11,
+    22
+  ],
+  "results": [
+    {
+      "case_id": "1080p_1_grid_bilinear",
+      "average_ms_median": 5.537332940000001,
+      "average_ms_min": 5.504098699999999,
+      "average_ms_max": 5.57573502,
+      "p95_ms_median": 5.704375000000001,
+      "p99_ms_median": 5.800583,
+      "megapixels_per_second_median": 374.4763088058057
+    },
+    {
+      "case_id": "1080p_1_grid_nearest",
+      "average_ms_median": 0.9781521400000001,
+      "average_ms_min": 0.9722283199999999,
+      "average_ms_max": 0.9805729100000001,
+      "p95_ms_median": 1.0249160000000002,
+      "p99_ms_median": 1.0510000000000002,
+      "megapixels_per_second_median": 2119.9156196703716
+    },
+    {
+      "case_id": "1080p_1_pip_bilinear",
+      "average_ms_median": 5.5415937500000005,
+      "average_ms_min": 5.5337046,
+      "average_ms_max": 5.5570692,
+      "p95_ms_median": 5.685917000000001,
+      "p99_ms_median": 5.923666,
+      "megapixels_per_second_median": 374.188382177961
+    },
+    {
+      "case_id": "1080p_1_pip_nearest",
+      "average_ms_median": 0.9861208100000001,
+      "average_ms_min": 0.9794412800000001,
+      "average_ms_max": 1.00247121,
+      "p95_ms_median": 1.038,
+      "p99_ms_median": 1.080667,
+      "megapixels_per_second_median": 2102.784951876231
+    },
+    {
+      "case_id": "1080p_2_grid_bilinear",
+      "average_ms_median": 5.2279496100000005,
+      "average_ms_min": 5.22344831,
+      "average_ms_max": 5.33545374,
+      "p95_ms_median": 5.415958,
+      "p99_ms_median": 5.466709,
+      "megapixels_per_second_median": 396.6373348422537
+    },
+    {
+      "case_id": "1080p_2_grid_nearest",
+      "average_ms_median": 1.19306786,
+      "average_ms_min": 1.19153424,
+      "average_ms_max": 1.20114044,
+      "p95_ms_median": 1.2747920000000001,
+      "p99_ms_median": 1.432792,
+      "megapixels_per_second_median": 1738.0402821344965
+    },
+    {
+      "case_id": "1080p_2_pip_bilinear",
+      "average_ms_median": 5.8625029799999995,
+      "average_ms_min": 5.85470042,
+      "average_ms_max": 5.97197455,
+      "p95_ms_median": 5.987458,
+      "p99_ms_median": 6.147041,
+      "megapixels_per_second_median": 353.70557713558725
+    },
+    {
+      "case_id": "1080p_2_pip_nearest",
+      "average_ms_median": 1.04742214,
+      "average_ms_min": 1.03516878,
+      "average_ms_max": 1.0485845999999999,
+      "p95_ms_median": 1.110792,
+      "p99_ms_median": 1.131375,
+      "megapixels_per_second_median": 1979.717556858212
+    },
+    {
+      "case_id": "1080p_4_grid_bilinear",
+      "average_ms_median": 5.827563319999999,
+      "average_ms_min": 5.784123719999999,
+      "average_ms_max": 5.83745665,
+      "p95_ms_median": 5.97275,
+      "p99_ms_median": 6.028541,
+      "megapixels_per_second_median": 355.82624952070023
+    },
+    {
+      "case_id": "1080p_4_grid_nearest",
+      "average_ms_median": 1.26075795,
+      "average_ms_min": 1.26063707,
+      "average_ms_max": 1.26177703,
+      "p95_ms_median": 1.3159999999999998,
+      "p99_ms_median": 1.352375,
+      "megapixels_per_second_median": 1644.724905363476
+    },
+    {
+      "case_id": "1080p_4_pip_bilinear",
+      "average_ms_median": 6.6045533,
+      "average_ms_min": 6.57324333,
+      "average_ms_max": 6.62847328,
+      "p95_ms_median": 6.743375,
+      "p99_ms_median": 6.855042,
+      "megapixels_per_second_median": 313.9652154824763
+    },
+    {
+      "case_id": "1080p_4_pip_nearest",
+      "average_ms_median": 1.17797581,
+      "average_ms_min": 1.17085873,
+      "average_ms_max": 1.1861853999999998,
+      "p95_ms_median": 1.2294999999999998,
+      "p99_ms_median": 1.2575830000000001,
+      "megapixels_per_second_median": 1760.3077944359486
+    },
+    {
+      "case_id": "1080p_8_grid_bilinear",
+      "average_ms_median": 5.07909002,
+      "average_ms_min": 5.06635335,
+      "average_ms_max": 5.12604459,
+      "p95_ms_median": 5.264792,
+      "p99_ms_median": 5.548540999999999,
+      "megapixels_per_second_median": 408.2621083372726
+    },
+    {
+      "case_id": "1080p_8_grid_nearest",
+      "average_ms_median": 0.96513996,
+      "average_ms_min": 0.95345499,
+      "average_ms_max": 0.9771442300000001,
+      "p95_ms_median": 1.042083,
+      "p99_ms_median": 1.054416,
+      "megapixels_per_second_median": 2148.4966802120593
+    },
+    {
+      "case_id": "1080p_8_pip_bilinear",
+      "average_ms_median": 6.45588376,
+      "average_ms_min": 6.44693331,
+      "average_ms_max": 6.462561249999999,
+      "p95_ms_median": 6.658207999999999,
+      "p99_ms_median": 6.849125,
+      "megapixels_per_second_median": 321.19537418684877
+    },
+    {
+      "case_id": "1080p_8_pip_nearest",
+      "average_ms_median": 1.1773291700000001,
+      "average_ms_min": 1.1631279,
+      "average_ms_max": 1.2006004000000001,
+      "p95_ms_median": 1.364333,
+      "p99_ms_median": 1.427541,
+      "megapixels_per_second_median": 1761.27463146097
+    },
+    {
+      "case_id": "720p_1_grid_bilinear",
+      "average_ms_median": 2.4570951,
+      "average_ms_min": 2.44868084,
+      "average_ms_max": 2.4619417500000003,
+      "p95_ms_median": 2.52025,
+      "p99_ms_median": 2.559708,
+      "megapixels_per_second_median": 375.0770574569947
+    },
+    {
+      "case_id": "720p_1_grid_nearest",
+      "average_ms_median": 0.44584248,
+      "average_ms_min": 0.44270169,
+      "average_ms_max": 0.45826754,
+      "p95_ms_median": 0.474292,
+      "p99_ms_median": 0.5032920000000001,
+      "megapixels_per_second_median": 2067.097778569687
+    },
+    {
+      "case_id": "720p_1_pip_bilinear",
+      "average_ms_median": 2.4653033399999997,
+      "average_ms_min": 2.43421546,
+      "average_ms_max": 2.48372301,
+      "p95_ms_median": 2.5587090000000003,
+      "p99_ms_median": 2.607875,
+      "megapixels_per_second_median": 373.8282364879285
+    },
+    {
+      "case_id": "720p_1_pip_nearest",
+      "average_ms_median": 0.44422082,
+      "average_ms_min": 0.44203874,
+      "average_ms_max": 0.44739418000000003,
+      "p95_ms_median": 0.468875,
+      "p99_ms_median": 0.49370800000000004,
+      "megapixels_per_second_median": 2074.6438674351193
+    },
+    {
+      "case_id": "720p_2_grid_bilinear",
+      "average_ms_median": 0.14306705,
+      "average_ms_min": 0.14120667,
+      "average_ms_max": 0.14519331000000002,
+      "p95_ms_median": 0.160167,
+      "p99_ms_median": 0.212917,
+      "megapixels_per_second_median": 6441.734836917376
+    },
+    {
+      "case_id": "720p_2_grid_nearest",
+      "average_ms_median": 0.14139626,
+      "average_ms_min": 0.13933416999999998,
+      "average_ms_max": 0.14416042,
+      "p95_ms_median": 0.154583,
+      "p99_ms_median": 0.17275,
+      "megapixels_per_second_median": 6517.852735284511
+    },
+    {
+      "case_id": "720p_2_pip_bilinear",
+      "average_ms_median": 2.6108179099999997,
+      "average_ms_min": 2.59883791,
+      "average_ms_max": 2.62753543,
+      "p95_ms_median": 2.66725,
+      "p99_ms_median": 2.699375,
+      "megapixels_per_second_median": 352.9928289790229
+    },
+    {
+      "case_id": "720p_2_pip_nearest",
+      "average_ms_median": 0.47377335,
+      "average_ms_min": 0.46860204000000005,
+      "average_ms_max": 0.47732666,
+      "p95_ms_median": 0.501334,
+      "p99_ms_median": 0.537291,
+      "megapixels_per_second_median": 1945.2339393931718
+    },
+    {
+      "case_id": "720p_4_grid_bilinear",
+      "average_ms_median": 2.4794683400000004,
+      "average_ms_min": 2.47141918,
+      "average_ms_max": 2.50184128,
+      "p95_ms_median": 2.54025,
+      "p99_ms_median": 2.60425,
+      "megapixels_per_second_median": 371.6925863227598
+    },
+    {
+      "case_id": "720p_4_grid_nearest",
+      "average_ms_median": 0.46671705,
+      "average_ms_min": 0.4635992,
+      "average_ms_max": 0.46709879000000004,
+      "p95_ms_median": 0.494958,
+      "p99_ms_median": 0.5271250000000001,
+      "megapixels_per_second_median": 1974.643951833343
+    },
+    {
+      "case_id": "720p_4_pip_bilinear",
+      "average_ms_median": 2.9422971500000004,
+      "average_ms_min": 2.9147812,
+      "average_ms_max": 2.96298587,
+      "p95_ms_median": 3.066125,
+      "p99_ms_median": 3.1065,
+      "megapixels_per_second_median": 313.2246516977389
+    },
+    {
+      "case_id": "720p_4_pip_nearest",
+      "average_ms_median": 0.52842503,
+      "average_ms_min": 0.5274179499999999,
+      "average_ms_max": 0.54249589,
+      "p95_ms_median": 0.564417,
+      "p99_ms_median": 0.5965830000000001,
+      "megapixels_per_second_median": 1744.0506177385278
+    },
+    {
+      "case_id": "720p_8_grid_bilinear",
+      "average_ms_median": 2.2354304000000003,
+      "average_ms_min": 2.23508788,
+      "average_ms_max": 2.2509029099999998,
+      "p95_ms_median": 2.3422080000000003,
+      "p99_ms_median": 2.386209,
+      "megapixels_per_second_median": 412.26960141545896
+    },
+    {
+      "case_id": "720p_8_grid_nearest",
+      "average_ms_median": 0.43662291999999997,
+      "average_ms_min": 0.43413369999999996,
+      "average_ms_max": 0.4386492,
+      "p95_ms_median": 0.476917,
+      "p99_ms_median": 0.512417,
+      "megapixels_per_second_median": 2110.745812427804
+    },
+    {
+      "case_id": "720p_8_pip_bilinear",
+      "average_ms_median": 2.83511745,
+      "average_ms_min": 2.78791252,
+      "average_ms_max": 2.8475875099999994,
+      "p95_ms_median": 2.9754159999999996,
+      "p99_ms_median": 3.131917,
+      "megapixels_per_second_median": 325.0658980635882
+    },
+    {
+      "case_id": "720p_8_pip_nearest",
+      "average_ms_median": 0.5131100100000001,
+      "average_ms_min": 0.50958088,
+      "average_ms_max": 0.5225671199999999,
+      "p95_ms_median": 0.5584159999999999,
+      "p99_ms_median": 0.595916,
+      "megapixels_per_second_median": 1796.10606310331
+    }
+  ]
+}

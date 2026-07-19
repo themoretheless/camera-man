@@ -1,0 +1,11 @@
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+reason = "Unmaintained paste is transitive through nokhwa; owned exception expires 2026-10-12 in docs/dependency-exceptions.md."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0194"
+reason = "quick-xml path is Linux-only and absent from both supported macOS target graphs; review by 2026-08-14."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0195"
+reason = "quick-xml path is Linux-only and absent from both supported macOS target graphs; review by 2026-08-14."

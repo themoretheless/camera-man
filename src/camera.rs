@@ -7,14 +7,26 @@ pub struct CameraDevice {
     pub name: String,
 }
 
+/// Enumerates camera-like inputs available to a backend.
 pub trait CameraDiscovery {
+    /// Returns a point-in-time device list. Discovery may block and callers
+    /// that own a UI thread should run it on a worker.
     fn list_devices(&self) -> Result<Vec<CameraDevice>, CameraManError>;
 }
 
+/// Produces the newest frame for one logical input.
+///
+/// `Ok(None)` means the source is healthy but has no frame ready. It must not
+/// be used for failures; return `Err` so pipeline metrics and UI recovery can
+/// distinguish a dropped frame from a broken source.
+///
+/// A complete implementation is available in `examples/custom_source.rs`.
 pub trait FrameSource {
+    /// Reads or clones the newest available frame.
     fn latest_frame(&mut self) -> Result<Option<CapturedFrame>, CameraManError>;
 }
 
+/// Deterministic solid-color source used by demos and tests.
 #[derive(Debug, Clone)]
 pub struct SyntheticFrameSource {
     source_id: String,
@@ -25,10 +37,12 @@ pub struct SyntheticFrameSource {
 }
 
 impl SyntheticFrameSource {
+    /// Creates a source with the stable id `synthetic`.
     pub fn new(width: u32, height: u32, bgra: [u8; 4]) -> Self {
         Self::with_id("synthetic", width, height, bgra)
     }
 
+    /// Creates a source with an explicit metadata id.
     pub fn with_id(source_id: impl Into<String>, width: u32, height: u32, bgra: [u8; 4]) -> Self {
         Self {
             source_id: source_id.into(),

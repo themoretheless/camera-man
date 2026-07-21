@@ -16,6 +16,7 @@ mod camera_discovery_worker;
 mod cli;
 #[path = "main/diagnostics.rs"]
 mod diagnostics;
+mod media_clock;
 mod provisioning;
 mod render_worker;
 #[path = "main/signing.rs"]
@@ -37,9 +38,9 @@ const APPLICATION_GROUPS_ENTITLEMENT: &str = "com.apple.security.application-gro
 use camera_man::FrameSource;
 use camera_man::{
     APP_GROUP_INFO_KEY, CameraDiscovery, CompositionLayout, Compositor, EXTENSION_BUNDLE_ID,
-    FrameTransportMode, FrameTransportSink, NokhwaCameraDiscovery, PipelineEngine, PixelFormat,
-    PpmSequenceSink, SyntheticFrameSource, VideoFormat, VirtualCameraConfig,
-    capture_one_with_timeout, default_frame_limits, write_ppm,
+    FrameTransportMode, FrameTransportSink, NokhwaCameraDiscovery, PixelFormat,
+    SyntheticFrameSource, VideoFormat, VirtualCameraConfig, capture_one_with_timeout,
+    default_frame_limits, write_ppm,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,7 +49,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None | Some("app") => app::run()?,
         Some("status") => print_status(),
         Some("demo") | Some("--demo") => run_demo(args.get(1).map(PathBuf::from))?,
-        Some("pipeline-demo") => run_pipeline_demo(args.get(1).map(PathBuf::from))?,
         Some("list-cameras") => list_cameras()?,
         Some("capture-demo") => capture_demo(args.get(1).map(PathBuf::from))?,
         Some("bundle") if args.get(1).is_some_and(|arg| is_help_flag(arg)) => print_bundle_help(),

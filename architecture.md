@@ -1,9 +1,9 @@
 # CameraMan Architecture
 
-CameraMan is a Rust-only macOS camera compositor. It combines selected camera
-sources into one BGRA output frame, previews that frame in an egui desktop app,
-and publishes the latest composed frame to a Rust CoreMediaIO system extension
-prototype.
+CameraMan is a Rust-only macOS camera compositor. It combines an ordered graph
+of generated and physical-camera sources into one BGRA output frame, previews
+that frame in an egui desktop app, and publishes the latest composed frame to a
+Rust CoreMediaIO system extension prototype.
 
 ## Current State
 
@@ -13,14 +13,17 @@ What works:
 - The egui app launches from `cargo run`.
 - Synthetic sources compose into a full 1920x1080 BGRA output while the UI uploads a separately throttled 960x540 preview texture.
 - Real camera discovery and background capture use `nokhwa`.
+- AVFoundation `uniqueID` values provide stable `uid:` source identity; aliases migrate legacy numeric selections and transform keys when devices are rediscovered.
+- Capture negotiation tries the requested output geometry/rate across every format decodable by the RGBA adapter, then bounded rate/resolution fallbacks. The physical-camera smoke selected 1920x1080 at 30 fps rather than the backend's 320x240 initial format.
 - Capture workers serialize same-id ownership with a process-local lease while keeping shutdown joins off egui.
 - Camera enumeration and frame capture each stay off the egui thread.
-- Real mode supports multiple selected cameras.
+- One ordered typed source graph can mix generated sources and multiple cameras without a global input mode.
 - Bounded app preferences persist through eframe storage without serializing runtime camera/worker/frame state.
 - Named scenes, 1 MiB-bounded versioned import, atomic export, gesture-coalesced Undo/Redo, missing-source policy and typed source transforms share one schema/runtime model.
 - Camera sources retain stable scene identity through disappearance and use bounded reconnect with a manual Retry command; backoff resets only after an actual frame.
 - Explicit reorder controls define stable composition order; PiP treats the first selected source as primary.
 - Composition and virtual publication run on a latest-job worker, never on the egui thread.
+- An owned media-clock thread uses the shared absolute-deadline pacer and emits coalesced latest-only wakeups; egui consumes ticks but does not define stream cadence.
 - Cloned frames share immutable pixel storage and detach only on mutation.
 - The app publishes live composed frames through one three-slot mmap protocol: POSIX shm for bare development and an App Group container file for signed bundles.
 - The extension borrows the newest mmap slot, copies directly into a bounded pooled `CVPixelBuffer`, attaches Rec.709 metadata, and emits `CMSampleBuffer` frames.
@@ -172,7 +175,7 @@ src/transport.rs
   environment-selected RAM/file adapter
 
 src/pipeline.rs
-  PipelineEngine
+  PipelineEngine (synchronous SDK/example harness, not the app runtime)
   PipelineMetrics
   RenderReport
   RunSummary
@@ -199,6 +202,14 @@ src/render_worker.rs
   RenderWorker
   one replaceable pending job
   background composition and virtual publication
+
+src/media_clock.rs
+  autonomous absolute-deadline app cadence
+  latest-only tick coalescing and explicit start/stop
+
+src/source_descriptor.rs
+  SourceKind and validated SourceDescriptor identity
+  stable per-source keys for scenes and transforms
 
 src/camera_discovery_worker.rs
   one in-flight enumeration request
@@ -344,7 +355,8 @@ real change boundary.
 
 ```mermaid
 flowchart LR
-    Sources["FrameSource implementations"] --> Captured["CapturedFrame"]
+    Clock["MediaClock / DeadlinePacer"] --> Sources["Ordered SourceDescriptor graph"]
+    Sources --> Captured["Latest CapturedFrame per source"]
     Captured --> Job["Latest RenderJob"]
     Job --> Worker["RenderWorker"]
     Worker --> Compositor["Compositor"]
@@ -357,11 +369,12 @@ flowchart LR
     Installer["ExtensionInstaller"] --> System["OSSystemExtensionRequest"]
 ```
 
-Synthetic preview:
+Mixed-source preview:
 
 ```text
-SyntheticFrameSource
-  -> CapturedFrame
+ordered SourceDescriptor values
+  -> SyntheticFrameSource and ThreadedNokhwaFrameSource together
+  -> latest CapturedFrame or None per source, preserving scene order
   -> latest RenderJob
   -> RenderWorker / Compositor
   -> full 1920x1080 Frame
@@ -369,11 +382,11 @@ SyntheticFrameSource
   -> downscaled egui texture result
 ```
 
-Real camera preview:
+Camera capture branch:
 
 ```text
 NokhwaCameraDiscovery
-  -> selected CameraDevice ids
+  -> selected camera descriptors from the shared source graph
   -> ThreadedNokhwaFrameSource per selected id
   -> latest CapturedFrame or None per source
   -> latest RenderJob (older pending job is replaced)
@@ -435,9 +448,9 @@ Single Responsibility:
 - `SharedFrameSink` only publishes the newest frame into process-shared RAM.
 - `FrameSpoolSink` only implements the explicit file fallback.
 - `ExtensionInstaller` only requests system-extension activation.
-- `PipelineEngine` orchestrates source -> render -> sink.
+- `PipelineEngine` orchestrates source -> render -> sink only for the synchronous SDK example and core tests.
 - `PipelineMetrics` records source/render/sink costs and dropped inputs without knowing platform APIs.
-- `RenderWorker` owns app composition, latest-only backpressure, and virtual publication away from the UI thread.
+- `MediaClock` owns production cadence; `RenderWorker` owns app composition, latest-only backpressure, and virtual publication away from the UI thread.
 - `CameraDiscoveryWorker` owns one asynchronous enumeration request.
 - `AppPreferences` owns only bounded serializable user choices.
 
@@ -535,7 +548,7 @@ CameraMan should feel like a focused desktop utility:
 - 16:9 preview as the main surface;
 - status bar for live state, fps, source count, rendered frames, virtual frames, and layout;
 - checkboxes for source selection;
-- segmented choices for input mode, layout, and fps;
+- compact source groups plus segmented choices for layout and fps;
 - segmented scaling choice keeps fast and smooth modes explicit;
 - clear disabled states;
 - no landing page, hero, decorative gradients, or marketing copy;
@@ -578,7 +591,7 @@ Fixed in this pass:
 - The fixed manual control column is now a native resizable egui panel with a
   260–420 px range and a vertical scroll area. Framebuffer screenshots verify
   the default 1120x720 and minimum 920x560 layouts without overlap.
-- `AppPreferences` stores input mode, stable source ids, layout, scaling, fps,
+- `AppPreferences` stores ordered typed source descriptors, layout, scaling, fps,
   editable export path and virtual-output preference. Runtime camera handles,
   workers, textures and frames remain transient.
 - Camera discovery moved to `CameraDiscoveryWorker`; refresh shows a spinner
@@ -638,7 +651,7 @@ Reviewed and fixed:
 - Capture error classification is typed.
 - Capture thread panics are isolated.
 - Capture thread cleanup has a nonblocking join path.
-- Real mode no longer supports only one camera.
+- The ordered source graph supports multiple cameras and generated sources together.
 - Auto fps can follow negotiated camera rates.
 - Successful AVFoundation reads no longer pay an unconditional extra 10 ms
   sleep; only failures use a short retry backoff.

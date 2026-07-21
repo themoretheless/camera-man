@@ -19,21 +19,15 @@ pub(super) struct PreparedSources {
 
 impl CameraManApp {
     pub(super) fn selected_source_ids(&self) -> Vec<String> {
-        match self.input_mode {
-            InputMode::Synthetic => self
-                .sources
-                .iter()
-                .filter(|source| source.selected)
-                .map(|source| source.id.to_owned())
-                .collect(),
-            InputMode::Real => self.selected_real_ids.clone(),
-        }
+        self.selected_sources
+            .iter()
+            .map(SourceDescriptor::stable_key)
+            .collect()
     }
 
     pub(super) fn scene_snapshot(&self) -> SceneSnapshot {
         SceneSnapshot {
-            input_mode: self.input_mode,
-            source_ids: self.selected_source_ids(),
+            sources: self.selected_sources.clone(),
             layout: self.layout,
             scaling_filter: self.scaling_filter,
             fps_mode: self.fps_mode,
@@ -94,12 +88,7 @@ impl CameraManApp {
     }
 
     pub(super) fn move_selected_source(&mut self, from: usize, to: usize) -> bool {
-        let mut ids = self.selected_source_ids();
-        if !move_item(&mut ids, from, to) {
-            return false;
-        }
-        self.apply_source_ids(ids);
-        true
+        move_item(&mut self.selected_sources, from, to)
     }
 
     pub(super) fn save_current_scene(&mut self) -> Result<(), String> {
@@ -129,11 +118,7 @@ impl CameraManApp {
             .cloned()
             .ok_or_else(|| String::from("scene no longer exists"))?;
         scene.to_json_pretty().map_err(|error| error.to_string())?;
-        self.input_mode = match scene.input_mode {
-            SceneInputMode::Synthetic => InputMode::Synthetic,
-            SceneInputMode::Real => InputMode::Real,
-        };
-        self.apply_source_ids(scene.source_ids.clone());
+        self.selected_sources = scene.sources.clone();
         self.layout = scene.layout;
         self.scaling_filter = scene.scaling_filter;
         self.source_transforms = scene.source_transforms.clone();
@@ -227,7 +212,7 @@ impl CameraManApp {
             );
         }
 
-        self.stale_source_count = missing;
+        self.missing_source_count = missing;
         self.last_good_frames
             .retain(|_, (_, captured_at)| now.duration_since(*captured_at) <= SOURCE_STALE_AFTER);
         PreparedSources {
@@ -250,28 +235,22 @@ impl CameraManApp {
                     .map(|transform| (id.clone(), transform))
             })
             .collect::<BTreeMap<_, _>>();
-        SceneDocument {
-            schema_version: SCENE_SCHEMA_VERSION,
+        SceneDocument::new(
             name,
-            input_mode: match self.input_mode {
-                InputMode::Synthetic => SceneInputMode::Synthetic,
-                InputMode::Real => SceneInputMode::Real,
-            },
-            source_ids,
-            layout: self.layout,
-            scaling_filter: self.scaling_filter,
+            self.selected_sources.clone(),
+            self.layout,
+            self.scaling_filter,
             source_transforms,
-            missing_source_policy: self.missing_source_policy,
-            output_fps: match self.fps_mode {
+            self.missing_source_policy,
+            match self.fps_mode {
                 FpsMode::Auto => None,
                 FpsMode::Fixed(fps) => Some(fps),
             },
-        }
+        )
     }
 
     fn restore_scene_snapshot(&mut self, snapshot: SceneSnapshot) {
-        self.input_mode = snapshot.input_mode;
-        self.apply_source_ids(snapshot.source_ids);
+        self.selected_sources = snapshot.sources;
         self.layout = snapshot.layout;
         self.scaling_filter = snapshot.scaling_filter;
         self.fps_mode = snapshot.fps_mode;
@@ -280,28 +259,11 @@ impl CameraManApp {
         self.active_scene_name = snapshot.active_scene_name;
         self.selected_source_id = self.selected_source_ids().into_iter().next();
     }
-
-    fn apply_source_ids(&mut self, ids: Vec<String>) {
-        match self.input_mode {
-            InputMode::Synthetic => {
-                for source in &mut self.sources {
-                    source.selected = ids.iter().any(|id| id == source.id);
-                }
-                self.sources.sort_by_key(|source| {
-                    ids.iter()
-                        .position(|id| id == source.id)
-                        .unwrap_or(usize::MAX)
-                });
-            }
-            InputMode::Real => self.selected_real_ids = ids,
-        }
-    }
 }
 
 impl SceneSnapshot {
     fn same_scene_content(&self, other: &Self) -> bool {
-        self.input_mode == other.input_mode
-            && self.source_ids == other.source_ids
+        self.sources == other.sources
             && self.layout == other.layout
             && self.scaling_filter == other.scaling_filter
             && self.fps_mode == other.fps_mode
@@ -372,8 +334,7 @@ mod tests {
     #[test]
     fn scene_content_comparison_ignores_only_active_name() {
         let base = SceneSnapshot {
-            input_mode: InputMode::Synthetic,
-            source_ids: vec![String::from("desk")],
+            sources: vec![SourceDescriptor::synthetic("desk")],
             layout: CompositionLayout::Grid,
             scaling_filter: ScalingFilter::Nearest,
             fps_mode: FpsMode::Auto,
@@ -438,8 +399,7 @@ mod tests {
 
     fn scene_snapshot(layout: CompositionLayout) -> SceneSnapshot {
         SceneSnapshot {
-            input_mode: InputMode::Synthetic,
-            source_ids: vec![String::from("desk")],
+            sources: vec![SourceDescriptor::synthetic("desk")],
             layout,
             scaling_filter: ScalingFilter::Nearest,
             fps_mode: FpsMode::Auto,

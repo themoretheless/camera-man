@@ -1,5 +1,5 @@
 use crate::camera::{CameraDevice, CameraDiscovery, FrameSource};
-use crate::config::VideoFormat;
+use crate::config::{VideoFormat, VirtualCameraConfig};
 use crate::diagnostics::{PipelineStage, stage_span};
 use crate::error::{CameraManError, CaptureErrorKind};
 use crate::frame::{CapturedFrame, Frame, FrameMetadata, PixelFormat};
@@ -13,6 +13,8 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+use nokhwa::FormatDecoder;
 
 static ACTIVE_CAMERA_IDS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -32,16 +34,12 @@ impl Drop for CameraLease {
 
 pub struct NokhwaCameraDiscovery;
 
+const CAMERA_UID_PREFIX: &str = "uid:";
+
 impl CameraDiscovery for NokhwaCameraDiscovery {
     fn list_devices(&self) -> Result<Vec<CameraDevice>, CameraManError> {
         let devices = nokhwa::query(nokhwa::utils::ApiBackend::Auto).map_err(nokhwa_error)?;
-        Ok(devices
-            .into_iter()
-            .map(|info| CameraDevice {
-                id: info.index().as_string(),
-                name: info.human_name().to_string(),
-            })
-            .collect())
+        Ok(devices.into_iter().map(camera_device_from_info).collect())
     }
 }
 
@@ -79,27 +77,47 @@ impl NokhwaFrameSource {
         Self::open_camera_index(
             nokhwa::utils::CameraIndex::Index(index),
             format!("camera-{index}"),
+            VirtualCameraConfig::default().format,
         )
     }
 
     pub fn open_id(id: &str) -> Result<Self, CameraManError> {
-        let index = id
-            .parse::<u32>()
-            .map(nokhwa::utils::CameraIndex::Index)
-            .unwrap_or_else(|_| nokhwa::utils::CameraIndex::String(id.to_string()));
-        Self::open_camera_index(index, format!("camera-{id}"))
+        Self::open_id_with_target(id, VirtualCameraConfig::default().format)
+    }
+
+    pub fn open_id_with_target(id: &str, target: VideoFormat) -> Result<Self, CameraManError> {
+        let index = camera_index_from_id(id);
+        Self::open_camera_index(index, format!("camera-{id}"), target)
     }
 
     fn open_camera_index(
         index: nokhwa::utils::CameraIndex,
         source_id: String,
+        target: VideoFormat,
     ) -> Result<Self, CameraManError> {
-        let requested = nokhwa::utils::RequestedFormat::new::<nokhwa::pixel_format::RgbAFormat>(
-            nokhwa::utils::RequestedFormatType::AbsoluteHighestFrameRate,
-        );
-        let mut camera = nokhwa::Camera::new(index, requested)
-            .map_err(nokhwa_error)
-            .map_err(|error| error.context(format!("open {source_id}")))?;
+        let mut last_error = None;
+        let mut camera = None;
+        for request_type in camera_request_candidates(target) {
+            let requested = nokhwa::utils::RequestedFormat::new::<nokhwa::pixel_format::RgbAFormat>(
+                request_type,
+            );
+            match nokhwa::Camera::new(index.clone(), requested) {
+                Ok(opened) => {
+                    camera = Some(opened);
+                    break;
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        let mut camera = camera.ok_or_else(|| {
+            nokhwa_error(last_error.unwrap_or_else(|| {
+                nokhwa::NokhwaError::OpenDeviceError(
+                    index.as_string(),
+                    String::from("no compatible decodable camera format"),
+                )
+            }))
+            .context(format!("open {source_id}"))
+        })?;
         camera
             .open_stream()
             .map_err(nokhwa_error)
@@ -112,9 +130,49 @@ impl NokhwaFrameSource {
     }
 }
 
+fn camera_request_candidates(target: VideoFormat) -> Vec<nokhwa::utils::RequestedFormatType> {
+    let resolution = nokhwa::utils::Resolution::new(target.width.max(1), target.height.max(1));
+    nokhwa::pixel_format::RgbAFormat::FORMATS
+        .iter()
+        .map(|frame_format| {
+            nokhwa::utils::RequestedFormatType::Closest(nokhwa::utils::CameraFormat::new(
+                resolution,
+                *frame_format,
+                target.fps.max(1),
+            ))
+        })
+        .chain([
+            nokhwa::utils::RequestedFormatType::HighestFrameRate(target.fps.max(1)),
+            nokhwa::utils::RequestedFormatType::AbsoluteHighestResolution,
+        ])
+        .collect()
+}
+
+fn camera_device_from_info(info: nokhwa::utils::CameraInfo) -> CameraDevice {
+    let legacy_id = info.index().as_string();
+    let unique_id = info.misc();
+    if unique_id.trim().is_empty() {
+        CameraDevice::new(legacy_id, info.human_name())
+    } else {
+        CameraDevice::with_aliases(
+            format!("{CAMERA_UID_PREFIX}{unique_id}"),
+            info.human_name(),
+            vec![legacy_id],
+        )
+    }
+}
+
+fn camera_index_from_id(id: &str) -> nokhwa::utils::CameraIndex {
+    if let Some(unique_id) = id.strip_prefix(CAMERA_UID_PREFIX) {
+        return nokhwa::utils::CameraIndex::String(unique_id.to_owned());
+    }
+    id.parse::<u32>()
+        .map(nokhwa::utils::CameraIndex::Index)
+        .unwrap_or_else(|_| nokhwa::utils::CameraIndex::String(id.to_owned()))
+}
+
 impl NokhwaFrameSource {
-    /// The frame rate actually negotiated with the device at open time (via
-    /// `RequestedFormatType::AbsoluteHighestFrameRate`), not a guess.
+    /// The frame rate actually negotiated with the device at open time, not a guess.
     pub fn frame_rate(&self) -> u32 {
         self.camera.frame_rate()
     }
@@ -165,6 +223,10 @@ fn rgba_to_bgra_in_place(pixels: &mut [u8]) {
 
 impl ThreadedNokhwaFrameSource {
     pub fn open_id(id: &str) -> Self {
+        Self::open_id_with_target(id, VirtualCameraConfig::default().format)
+    }
+
+    pub fn open_id_with_target(id: &str, target: VideoFormat) -> Self {
         let latest = Arc::new(Mutex::new(None));
         let last_error = Arc::new(Mutex::new(None));
         let negotiated_format = Arc::new(Mutex::new(None));
@@ -185,6 +247,7 @@ impl ThreadedNokhwaFrameSource {
                     &worker_last_error,
                     &worker_negotiated_format,
                     &worker_stop,
+                    target,
                 );
             })
             .expect("failed to spawn camera capture thread");
@@ -225,13 +288,14 @@ fn run_capture_worker(
     last_error: &Arc<Mutex<Option<CameraManError>>>,
     negotiated_format: &Arc<Mutex<Option<VideoFormat>>>,
     stop: &Arc<AtomicBool>,
+    target: VideoFormat,
 ) {
     let Some(_lease) = wait_for_camera_lease(id, stop) else {
         return;
     };
     let mut backoff = ReconnectBackoff::default();
     while !stop.load(Ordering::Relaxed) {
-        let mut source = match NokhwaFrameSource::open_id(id) {
+        let mut source = match NokhwaFrameSource::open_id_with_target(id, target) {
             Ok(source) => source,
             Err(error) => {
                 *last_error.lock().expect("camera error mutex poisoned") = Some(error);
@@ -247,7 +311,8 @@ fn run_capture_worker(
         *negotiated_format
             .lock()
             .expect("camera format mutex poisoned") = Some(source.video_format());
-        *last_error.lock().expect("camera error mutex poisoned") = None;
+        // A successful open is not recovery yet. Keep any prior error visible
+        // until this session has delivered a genuinely new frame.
 
         let mut failure_streak = 0_u8;
         while !stop.load(Ordering::Relaxed) {
@@ -485,6 +550,43 @@ mod tests {
         for (message, expected) in samples {
             assert_eq!(CaptureErrorKind::classify(message), expected);
         }
+    }
+
+    #[test]
+    fn stable_uid_and_legacy_index_open_through_distinct_locators() {
+        assert_eq!(camera_index_from_id("0").as_string(), "0");
+        assert_eq!(
+            camera_index_from_id("uid:avfoundation-device").as_string(),
+            "avfoundation-device"
+        );
+    }
+
+    #[test]
+    fn format_negotiation_tries_exact_output_before_broad_fallbacks() {
+        let target = VideoFormat {
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            pixel_format: PixelFormat::Bgra8,
+        };
+        let candidates = camera_request_candidates(target);
+
+        let nokhwa::utils::RequestedFormatType::Closest(first) = candidates[0] else {
+            panic!("first camera request must be target-specific");
+        };
+        assert_eq!(
+            first.resolution(),
+            nokhwa::utils::Resolution::new(1920, 1080)
+        );
+        assert_eq!(first.frame_rate(), 30);
+        assert_eq!(
+            candidates[candidates.len() - 2],
+            nokhwa::utils::RequestedFormatType::HighestFrameRate(30)
+        );
+        assert_eq!(
+            candidates.last(),
+            Some(&nokhwa::utils::RequestedFormatType::AbsoluteHighestResolution)
+        );
     }
 
     #[test]

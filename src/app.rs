@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::app_preferences::{
-    AppPreferences, CURRENT_SCHEMA_VERSION, FpsMode, InputMode, UiLocale, default_preferences_path,
+    AppPreferences, CURRENT_SCHEMA_VERSION, FpsMode, UiLocale, default_preferences_path,
 };
 use crate::camera_discovery_worker::CameraDiscoveryWorker;
+use crate::media_clock::MediaClock;
 use crate::render_worker::{RenderJob, RenderWorker};
 use crate::{
     APPLICATION_GROUPS_ENTITLEMENT, EXTENSION_APP_SANDBOX_ENTITLEMENT,
@@ -16,11 +17,10 @@ use camera_man::{
     CameraDevice, CapturedFrame, CompositionLayout, ConsumerProgress, EXTENSION_BUNDLE_ID,
     ExtensionActivationStatus, ExtensionInstaller, Frame, FrameMetadata, FrameTransportSink,
     MissingSourcePolicy, PipelineStage, PixelFormat, ProducerProgress, Rotation,
-    SCENE_PARSER_LIMITS, SCENE_SCHEMA_VERSION, ScalingFilter, SceneChange, SceneDocument,
-    SceneInputMode, SourceFit, SourceHealthSummary, SourceHealthVector, SourceTransform,
-    SyntheticFrameSource, ThreadedNokhwaFrameSource, VIRTUAL_CAMERA_DEFAULT_FPS,
-    VIRTUAL_CAMERA_FPS_PRESETS, VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS,
-    VIRTUAL_CAMERA_WIDTH, VideoFormat,
+    SCENE_PARSER_LIMITS, ScalingFilter, SceneChange, SceneDocument, SourceDescriptor, SourceFit,
+    SourceHealthSummary, SourceHealthVector, SourceKind, SourceTransform, SyntheticFrameSource,
+    ThreadedNokhwaFrameSource, VIRTUAL_CAMERA_DEFAULT_FPS, VIRTUAL_CAMERA_FPS_PRESETS,
+    VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS, VIRTUAL_CAMERA_WIDTH, VideoFormat,
 };
 use eframe::egui;
 
@@ -40,7 +40,7 @@ mod ui_setup;
 mod ui_tokens;
 
 use accessibility::{progress_indicator, system_accessibility_settings};
-use capture_coordination::SourceSlot;
+use capture_coordination::{SourceSlot, camera_locators_match};
 use controller::{AppCommand, AppEvent, WorkflowState, reduce};
 use localization::{UiText, tr};
 use scene_commands::SceneEditCommand;
@@ -70,9 +70,6 @@ const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(8);
 const CAMERA_DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DEFAULT_SCENE_PATH: &str = "target/cameraman-scene.json";
 
-/// What Auto resolves to before any real camera has reported its negotiated
-/// rate (Synthetic mode, or Real mode before Start / before the capture
-/// thread finishes opening the device). Matches the old hardcoded behavior.
 /// How long a non-error event (export confirmation etc.) stays in the status bar.
 const EVENT_TTL: Duration = Duration::from_secs(4);
 pub fn run() -> eframe::Result<()> {
@@ -147,8 +144,7 @@ enum VirtualCameraSelfTest {
 /// never an independent persisted source of truth.
 #[derive(Clone, PartialEq)]
 struct SceneSnapshot {
-    input_mode: InputMode,
-    source_ids: Vec<String>,
+    sources: Vec<SourceDescriptor>,
     layout: CompositionLayout,
     scaling_filter: ScalingFilter,
     fps_mode: FpsMode,
@@ -249,12 +245,11 @@ impl AppLaunchContext {
 /// typed snapshots; they never borrow this aggregate.
 pub struct CameraManApp {
     sources: Vec<SourceSlot>,
-    input_mode: InputMode,
+    /// Ordered heterogeneous scene graph. Composition order is this vector's order.
+    selected_sources: Vec<SourceDescriptor>,
     real_devices: Vec<CameraDevice>,
     camera_discovery: CameraDiscoveryWorker,
     announce_discovery_result: bool,
-    /// Selection order doubles as composition order (first checked -> first cell).
-    selected_real_ids: Vec<String>,
     selected_source_id: Option<String>,
     source_transforms: BTreeMap<String, SourceTransform>,
     missing_source_policy: MissingSourcePolicy,
@@ -278,9 +273,9 @@ pub struct CameraManApp {
     force_setup_fixture: bool,
     fixture_state: Option<UiFixtureState>,
     fixture_capture: Option<UiFixtureCapture>,
-    stale_source_count: usize,
+    missing_source_count: usize,
     virtual_camera_self_test: VirtualCameraSelfTest,
-    /// Only devices currently in `selected_real_ids` have an entry here;
+    /// Only camera descriptors currently selected have an entry here;
     /// unchecking a device drops its entry immediately, releasing the camera.
     /// The trailing `u32` is that camera's own consecutive-failure streak,
     /// tracked per source so one broken camera in a multi-camera composite
@@ -305,6 +300,7 @@ pub struct CameraManApp {
     active_fps: u32,
     layout: CompositionLayout,
     scaling_filter: ScalingFilter,
+    media_clock: MediaClock,
     render_worker: RenderWorker,
     /// Invalidates a completed frame when source/layout state changed while
     /// that frame was still being composed on the worker.
@@ -313,7 +309,6 @@ pub struct CameraManApp {
     running: bool,
     tick: u64,
     frames_rendered: u64,
-    last_frame_at: Instant,
     notice: Option<StatusEvent>,
     sticky_error: Option<String>,
     capture_error_streak: u32,
@@ -351,55 +346,33 @@ impl CameraManApp {
             &cc.egui_ctx,
             preferences.high_contrast || accessibility.increase_contrast,
         );
-        let mut sources = vec![
+        let sources = vec![
             SourceSlot {
                 id: "desk",
                 name: "Desk Camera",
                 bgra: [235, 94, 40, 255],
-                selected: preferences
-                    .selected_synthetic_ids
-                    .iter()
-                    .any(|id| id == "desk"),
             },
             SourceSlot {
                 id: "side",
                 name: "Side Camera",
                 bgra: [62, 181, 137, 255],
-                selected: preferences
-                    .selected_synthetic_ids
-                    .iter()
-                    .any(|id| id == "side"),
             },
             SourceSlot {
                 id: "wide",
                 name: "Wide Camera",
                 bgra: [72, 126, 220, 255],
-                selected: preferences
-                    .selected_synthetic_ids
-                    .iter()
-                    .any(|id| id == "wide"),
             },
             SourceSlot {
                 id: "overhead",
                 name: "Overhead",
                 bgra: [196, 166, 76, 255],
-                selected: preferences
-                    .selected_synthetic_ids
-                    .iter()
-                    .any(|id| id == "overhead"),
             },
         ];
-        sources.sort_by_key(|source| {
-            preferences
-                .selected_synthetic_ids
-                .iter()
-                .position(|id| id == source.id)
-                .unwrap_or(usize::MAX)
-        });
 
         let virtual_sink = FrameTransportSink::default();
         let virtual_endpoint = virtual_sink.description();
         let render_worker = RenderWorker::new(virtual_sink);
+        let media_clock = MediaClock::new(cc.egui_ctx.clone(), VIRTUAL_CAMERA_DEFAULT_FPS);
         let current_bundle = current_app_bundle_path();
         let launch_context = match current_bundle.as_deref() {
             Some(bundle) if app_bundle_has_activation_location(bundle) => {
@@ -419,13 +392,10 @@ impl CameraManApp {
                 .is_file()
         });
         let extension_capability = extension_capability();
-        let selected_source_id = match preferences.input_mode {
-            InputMode::Synthetic => sources
-                .iter()
-                .find(|source| source.selected)
-                .map(|source| source.id.to_owned()),
-            InputMode::Real => preferences.selected_real_ids.first().cloned(),
-        };
+        let selected_source_id = preferences
+            .selected_sources
+            .first()
+            .map(SourceDescriptor::stable_key);
         let scene_name_input = preferences
             .active_scene_name
             .clone()
@@ -447,11 +417,10 @@ impl CameraManApp {
             });
         let mut app = Self {
             sources,
-            input_mode: preferences.input_mode,
+            selected_sources: preferences.selected_sources,
             real_devices: Vec::new(),
             camera_discovery: CameraDiscoveryWorker::new(),
             announce_discovery_result: false,
-            selected_real_ids: preferences.selected_real_ids,
             selected_source_id,
             source_transforms: preferences.source_transforms,
             missing_source_policy: preferences.missing_source_policy,
@@ -475,7 +444,7 @@ impl CameraManApp {
             force_setup_fixture,
             fixture_state,
             fixture_capture,
-            stale_source_count: 0,
+            missing_source_count: 0,
             virtual_camera_self_test: VirtualCameraSelfTest::Idle,
             real_sources: Vec::new(),
             extension_installer: ExtensionInstaller::new(),
@@ -490,13 +459,13 @@ impl CameraManApp {
             active_fps: VIRTUAL_CAMERA_DEFAULT_FPS,
             layout: preferences.layout,
             scaling_filter: preferences.scaling_filter,
+            media_clock,
             render_worker,
             render_epoch: 0,
             last_render_fingerprint: None,
             running: false,
             tick: 0,
             frames_rendered: 0,
-            last_frame_at: Instant::now(),
             notice: None,
             sticky_error: None,
             capture_error_streak: 0,
@@ -539,23 +508,27 @@ impl CameraManApp {
             UiFixtureState::Workspace => {}
             UiFixtureState::Setup => self.show_setup = true,
             UiFixtureState::Empty => {
-                self.sources
-                    .iter_mut()
-                    .for_each(|source| source.selected = false);
-                self.selected_real_ids.clear();
+                self.selected_sources.clear();
                 self.selected_source_id = None;
                 self.preview = None;
                 self.preview_texture = None;
             }
+            UiFixtureState::Mixed => {
+                let camera_id = String::from("fixture-camera");
+                self.real_devices = vec![CameraDevice::new(camera_id.clone(), "Studio Camera")];
+                let synthetic = SourceDescriptor::synthetic("desk");
+                let camera = SourceDescriptor::camera(camera_id);
+                self.selected_source_id = Some(synthetic.stable_key());
+                self.selected_sources = vec![synthetic, camera];
+                self.running = false;
+                self.waiting_for_camera = false;
+            }
             UiFixtureState::Disconnected => {
                 let id = String::from("fixture-camera");
-                self.input_mode = InputMode::Real;
-                self.real_devices = vec![CameraDevice {
-                    id: id.clone(),
-                    name: String::from("Studio Camera"),
-                }];
-                self.selected_real_ids = vec![id.clone()];
-                self.selected_source_id = Some(id);
+                self.real_devices = vec![CameraDevice::new(id.clone(), "Studio Camera")];
+                let descriptor = SourceDescriptor::camera(id);
+                self.selected_source_id = Some(descriptor.stable_key());
+                self.selected_sources = vec![descriptor];
                 self.running = true;
                 self.waiting_for_camera = true;
                 self.sticky_error = Some(String::from(
@@ -587,23 +560,16 @@ impl CameraManApp {
     }
 
     fn selected_count(&self) -> usize {
-        match self.input_mode {
-            InputMode::Synthetic => self.sources.iter().filter(|source| source.selected).count(),
-            InputMode::Real => self.selected_real_ids.len(),
-        }
+        self.selected_sources.len()
     }
 
     fn preferences(&self) -> AppPreferences {
         AppPreferences {
             schema_version: CURRENT_SCHEMA_VERSION,
-            input_mode: self.input_mode,
-            selected_synthetic_ids: self
-                .sources
-                .iter()
-                .filter(|source| source.selected)
-                .map(|source| source.id.to_owned())
-                .collect(),
-            selected_real_ids: self.selected_real_ids.clone(),
+            selected_sources: self.selected_sources.clone(),
+            legacy_input_mode: Default::default(),
+            legacy_selected_synthetic_ids: Vec::new(),
+            legacy_selected_real_ids: Vec::new(),
             layout: self.layout,
             scaling_filter: self.scaling_filter,
             fps_mode: self.fps_mode,
@@ -707,9 +673,10 @@ impl CameraManApp {
                 self.sticky_error = None;
                 self.running = workflow.running;
                 self.capture_error_streak = 0;
-                self.last_frame_at = Instant::now();
                 self.fps_window_start = Instant::now();
                 self.fps_window_frames = 0;
+                self.recompute_active_fps();
+                self.media_clock.start(self.active_fps);
                 self.request_render(ctx, true, true);
             }
             AppEvent::VirtualOutputChanged { .. } | AppEvent::NoChange => {}
@@ -720,6 +687,7 @@ impl CameraManApp {
     /// camera open after Stop leaves its LED on and looks like spying.
     fn stop_streaming(&mut self) {
         self.running = false;
+        self.media_clock.stop();
         self.last_render_fingerprint = None;
         self.invalidate_render_epoch();
         self.real_sources.clear();
@@ -750,12 +718,9 @@ impl CameraManApp {
             return;
         }
         self.active_fps = fps;
-    }
-
-    /// Render-loop cadence derived from `active_fps`. A method, not a
-    /// constant, so it always reflects the current Auto/Fixed choice.
-    fn frame_interval(&self) -> Duration {
-        Duration::from_nanos(1_000_000_000 / u64::from(self.active_fps.max(1)))
+        if self.running {
+            self.media_clock.set_fps(fps);
+        }
     }
 
     fn fixed_fps_warning(&self) -> Option<String> {
@@ -793,15 +758,7 @@ impl CameraManApp {
             }
             return;
         }
-        let frames = match self.input_mode {
-            InputMode::Synthetic => self
-                .sources
-                .iter()
-                .filter(|source| source.selected)
-                .map(|source| self.synthetic_frame(source))
-                .collect::<Result<Vec<_>, _>>(),
-            InputMode::Real => Ok(self.real_frames(allow_open_camera)),
-        };
+        let frames = self.selected_frames(allow_open_camera);
 
         let frames = match frames {
             Ok(frames) => frames,
@@ -811,17 +768,20 @@ impl CameraManApp {
                 return;
             }
         };
+        let only_cameras = self
+            .selected_sources
+            .iter()
+            .all(|source| source.kind == SourceKind::Camera);
+        let every_frame_missing = frames.iter().all(Option::is_none);
+        self.waiting_for_camera = self.running && only_cameras && every_frame_missing;
         let prepared = self.prepare_sources(source_ids, frames);
         let frames = prepared.frames;
 
-        if self.input_mode == InputMode::Real
-            && (frames.is_empty() || frames.iter().all(Option::is_none))
-        {
+        if only_cameras && (frames.is_empty() || frames.iter().all(Option::is_none)) {
             // Camera thread is still warming up (or closed): keep the previous
             // texture on screen and report the waiting state only for an
             // active preview. A paused real-mode selection has not opened the
             // device yet and must not look like a hung capture.
-            self.waiting_for_camera = self.running;
             if prepared.suppress_output {
                 self.disconnect_virtual_output();
             }
@@ -919,9 +879,13 @@ impl CameraManApp {
         if !targets.preview && !targets.output {
             return;
         }
-        if self.input_mode == InputMode::Synthetic {
-            self.real_sources.clear();
-        }
+        let selected_camera_ids = self.selected_camera_ids();
+        let devices = &self.real_devices;
+        self.real_sources.retain(|(runtime_id, _, _)| {
+            selected_camera_ids
+                .iter()
+                .any(|selected_id| camera_locators_match(runtime_id, selected_id, devices))
+        });
         self.invalidate_render_epoch();
         self.recompute_active_fps();
         self.request_render(ctx, self.running, true);

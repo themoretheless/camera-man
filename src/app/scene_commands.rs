@@ -2,9 +2,8 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SceneEditCommand {
-    SetInputMode(InputMode),
     SetSourceSelected {
-        source_id: String,
+        source: SourceDescriptor,
         selected: bool,
     },
     MoveSource {
@@ -24,7 +23,7 @@ pub(super) enum SceneEditCommand {
 impl SceneEditCommand {
     const fn invalidation(&self) -> SceneChange {
         match self {
-            Self::SetInputMode(_) | Self::SetSourceSelected { .. } => SceneChange::SourceTopology,
+            Self::SetSourceSelected { .. } => SceneChange::SourceTopology,
             Self::MoveSource { .. } => SceneChange::SourceOrder,
             Self::SetTransform { .. } => SceneChange::Transform,
             Self::SetLayout(_) => SceneChange::Layout,
@@ -39,46 +38,23 @@ impl CameraManApp {
     pub(super) fn apply_scene_command(&mut self, command: SceneEditCommand) -> Option<SceneChange> {
         let invalidation = command.invalidation();
         let changed = match command {
-            SceneEditCommand::SetInputMode(mode) => {
-                if self.input_mode == mode {
-                    false
-                } else {
-                    self.input_mode = mode;
-                    self.selected_source_id = self.selected_source_ids().first().cloned();
+            SceneEditCommand::SetSourceSelected { source, selected } => {
+                let stable_key = source.stable_key();
+                let present = self.selected_sources.contains(&source);
+                let changed = if selected && !present {
+                    self.selected_sources.push(source);
                     true
-                }
-            }
-            SceneEditCommand::SetSourceSelected {
-                source_id,
-                selected,
-            } => {
-                let changed = match self.input_mode {
-                    InputMode::Synthetic => self
-                        .sources
-                        .iter_mut()
-                        .find(|source| source.id == source_id)
-                        .is_some_and(|source| {
-                            let changed = source.selected != selected;
-                            source.selected = selected;
-                            changed
-                        }),
-                    InputMode::Real => {
-                        let present = self.selected_real_ids.contains(&source_id);
-                        if selected && !present {
-                            self.selected_real_ids.push(source_id.clone());
-                            true
-                        } else if !selected && present {
-                            self.selected_real_ids.retain(|id| id != &source_id);
-                            true
-                        } else {
-                            false
-                        }
-                    }
+                } else if !selected && present {
+                    self.selected_sources
+                        .retain(|candidate| candidate != &source);
+                    true
+                } else {
+                    false
                 };
                 if changed {
                     if selected {
-                        self.selected_source_id = Some(source_id);
-                    } else if self.selected_source_id.as_deref() == Some(source_id.as_str()) {
+                        self.selected_source_id = Some(stable_key.clone());
+                    } else if self.selected_source_id.as_deref() == Some(stable_key.as_str()) {
                         self.selected_source_id = self.selected_source_ids().first().cloned();
                     }
                 }

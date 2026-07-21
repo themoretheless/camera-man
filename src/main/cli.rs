@@ -32,7 +32,7 @@ pub(super) fn print_status() {
     println!("Run `cargo test` to verify the core.");
     println!("Run `cargo run` to launch the Rust desktop app.");
     println!("Run `cargo run -- demo` to render a synthetic composed frame.");
-    println!("Run `cargo run -- pipeline-demo` to render through the pipeline.");
+    println!("Run `cargo run --example pipeline_demo` to exercise the synchronous SDK pipeline.");
     println!("Run `cargo run -- list-cameras` to query real cameras.");
     println!("Run `cargo run --release -- bundle` to create an optimized CameraMan.app.");
 }
@@ -58,58 +58,6 @@ pub(super) fn run_demo(output_path: Option<PathBuf>) -> Result<(), Box<dyn std::
     let path = output_path.unwrap_or_else(|| PathBuf::from("target/camera-man-demo.ppm"));
     write_ppm(&path, &output)?;
     println!("Rendered demo frame: {}", path.display());
-    Ok(())
-}
-
-pub(super) fn run_pipeline_demo(
-    output_dir: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let output_dir = output_dir.unwrap_or_else(|| PathBuf::from("target/camera-man-pipeline-demo"));
-    let compositor = Compositor::new(VideoFormat {
-        width: 960,
-        height: 540,
-        fps: 30,
-        pixel_format: PixelFormat::Bgra8,
-    });
-    let sources: Vec<Box<dyn FrameSource>> = vec![
-        Box::new(SyntheticFrameSource::with_id(
-            "blue",
-            320,
-            240,
-            [255, 40, 40, 255],
-        )),
-        Box::new(SyntheticFrameSource::with_id(
-            "green",
-            320,
-            240,
-            [40, 255, 40, 255],
-        )),
-        Box::new(SyntheticFrameSource::with_id(
-            "red",
-            320,
-            240,
-            [40, 40, 255, 255],
-        )),
-    ];
-    let sink = PpmSequenceSink::new(&output_dir, "frame");
-    let mut pipeline = PipelineEngine::new(compositor, sources, sink, CompositionLayout::Grid);
-
-    pipeline.start()?;
-    let summary = pipeline.render_n(3)?;
-    pipeline.stop();
-
-    println!(
-        "Rendered {} pipeline frames into {}",
-        summary.frames_sent,
-        output_dir.display()
-    );
-    println!(
-        "Pipeline totals: source {:?}, render {:?}, sink {:?}, dropped source frames {}",
-        summary.metrics.source_read_duration,
-        summary.metrics.render_duration,
-        summary.metrics.sink_send_duration,
-        summary.metrics.dropped_source_frames,
-    );
     Ok(())
 }
 

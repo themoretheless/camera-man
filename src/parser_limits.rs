@@ -2,6 +2,8 @@ use std::fmt;
 use std::io::{self, Read};
 use std::path::Path;
 
+use crate::MAX_SOURCE_KEY_BYTES;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParserLimits {
     pub max_input_bytes: usize,
@@ -15,7 +17,7 @@ pub const SCENE_PARSER_LIMITS: ParserLimits = ParserLimits {
     max_input_bytes: 1024 * 1024,
     max_nesting_depth: 64,
     max_elements: 64,
-    max_string_bytes: 256,
+    max_string_bytes: MAX_SOURCE_KEY_BYTES,
     max_allocation_bytes: 2 * 1024 * 1024,
 };
 

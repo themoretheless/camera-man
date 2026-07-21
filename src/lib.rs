@@ -37,6 +37,7 @@ pub mod quality;
 pub mod render;
 pub mod scene_schema;
 pub mod shared_memory_transport;
+pub mod source_descriptor;
 pub mod source_health;
 pub mod source_transform;
 pub mod stream_runtime;
@@ -119,7 +120,8 @@ pub use quality::{
 };
 pub use render::{Compositor, ScalingFilter};
 pub use scene_schema::{
-    MissingSourcePolicy, SCENE_SCHEMA_VERSION, SceneDocument, SceneInputMode, SceneSchemaError,
+    LegacySceneInputMode, MissingSourcePolicy, SCENE_SCHEMA_VERSION, SceneDocument,
+    SceneSchemaError,
 };
 pub use shared_memory_transport::{
     BorrowedTransportFrame, ConsumerProgress, ProducerProgress, SHARED_PROTOCOL_MAGIC,
@@ -127,6 +129,10 @@ pub use shared_memory_transport::{
     SharedFrameSink, SharedHeaderMetadata, SharedProtocolValidationError, SharedSlotMetadata,
     checked_mapped_len, checked_slot_offset, default_shared_frame_endpoint,
     default_shared_memory_name, validate_shared_header_metadata, validate_shared_slot_metadata,
+};
+pub use source_descriptor::{
+    MAX_SOURCE_KEY_BYTES, MAX_SOURCE_LOCATOR_BYTES, SourceDescriptor, SourceDescriptorError,
+    SourceKind,
 };
 pub use source_health::{
     ConsumerAckHealth, DropHealth, FormatHealth, FreshnessHealth, JitterHealth, ReconnectHealth,

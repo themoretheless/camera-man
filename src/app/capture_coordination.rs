@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -5,7 +7,6 @@ pub(super) struct SourceSlot {
     pub(super) id: &'static str,
     pub(super) name: &'static str,
     pub(super) bgra: [u8; 4],
-    pub(super) selected: bool,
 }
 
 impl CameraManApp {
@@ -14,43 +15,92 @@ impl CameraManApp {
         source: &SourceSlot,
     ) -> Result<Option<CapturedFrame>, camera_man::CameraManError> {
         let bgra = animated_color(source.bgra, self.tick, self.reduce_motion);
+        let source_id = SourceDescriptor::synthetic(source.id).stable_key();
         let mut frame_source =
-            SyntheticFrameSource::with_id(source.id, SOURCE_WIDTH, SOURCE_HEIGHT, bgra);
+            SyntheticFrameSource::with_id(source_id, SOURCE_WIDTH, SOURCE_HEIGHT, bgra);
         frame_source.latest_frame()
     }
 
+    pub(super) fn selected_camera_ids(&self) -> Vec<String> {
+        self.selected_sources
+            .iter()
+            .filter(|source| source.kind == SourceKind::Camera)
+            .map(|source| source.locator.clone())
+            .collect()
+    }
+
+    /// Resolves the ordered heterogeneous scene graph into one latest-frame
+    /// vector without grouping sources by kind.
+    pub(super) fn selected_frames(
+        &mut self,
+        allow_open: bool,
+    ) -> Result<Vec<Option<CapturedFrame>>, camera_man::CameraManError> {
+        let selected_sources = self.selected_sources.clone();
+        let camera_ids = self.selected_camera_ids();
+        let camera_frames = camera_ids
+            .iter()
+            .cloned()
+            .zip(self.real_frames(&camera_ids, allow_open))
+            .collect::<Vec<_>>();
+        resolve_ordered_sources(&selected_sources, camera_frames, |locator| {
+            self.sources
+                .iter()
+                .find(|source| source.id == locator)
+                .map(|source| self.synthetic_frame(source))
+                .unwrap_or(Ok(None))
+        })
+    }
+
     /// Returns the newest frame from every selected real camera, in
-    /// selection order (so composition order matches check order, the same
-    /// way Synthetic mode's cell order matches its fixed source list).
+    /// selection order, which is later merged with the other source kinds by
+    /// the scene graph's single composition order.
     ///
     /// Cameras are opened only when `allow_open` is true (Start pressed /
     /// already streaming), never as a side effect of switching modes or
     /// checking a box. A single failing camera degrades to `None` for that
     /// cell instead of aborting the whole composite (mirrors
-    /// `PipelineEngine::render_once`); only when EVERY selected camera is
-    /// currently failing the shared capture streak records one source-named
-    /// error and eventually stops the preview, while the empty frame set keeps
-    /// the waiting state explicit.
+    /// `PipelineEngine::render_once`); only an all-camera scene with no healthy
+    /// camera records the failure in the shared capture streak. A mixed scene
+    /// keeps rendering its non-camera cells.
     ///
     /// Each source tracks its own consecutive-failure streak (the trailing
     /// `u32` in `real_sources`). The capture worker reconnects with bounded
     /// exponential backoff, while this coordinator keeps the source selected
     /// and exposes a stable RETRY state to the UI.
-    pub(super) fn real_frames(&mut self, allow_open: bool) -> Vec<Option<CapturedFrame>> {
+    fn real_frames(
+        &mut self,
+        selected_camera_ids: &[String],
+        allow_open: bool,
+    ) -> Vec<Option<CapturedFrame>> {
         // Release cameras that were unchecked (or disappeared) since the last tick.
-        self.real_sources
-            .retain(|(id, _, _)| self.selected_real_ids.contains(id));
+        let devices = &self.real_devices;
+        self.real_sources.retain(|(runtime_id, _, _)| {
+            selected_camera_ids
+                .iter()
+                .any(|selected_id| camera_locators_match(runtime_id, selected_id, devices))
+        });
 
         if allow_open {
-            for id in &self.selected_real_ids {
-                if !self.real_sources.iter().any(|(sid, _, _)| sid == id) {
-                    self.real_sources
-                        .push((id.clone(), ThreadedNokhwaFrameSource::open_id(id), 0));
+            let capture_target = VideoFormat {
+                width: VIRTUAL_CAMERA_WIDTH,
+                height: VIRTUAL_CAMERA_HEIGHT,
+                fps: self.active_fps,
+                pixel_format: PixelFormat::Bgra8,
+            };
+            for id in selected_camera_ids {
+                if !self.real_sources.iter().any(|(runtime_id, _, _)| {
+                    camera_locators_match(runtime_id, id, &self.real_devices)
+                }) {
+                    self.real_sources.push((
+                        id.clone(),
+                        ThreadedNokhwaFrameSource::open_id_with_target(id, capture_target),
+                        0,
+                    ));
                 }
             }
         }
 
-        let mut frames = Vec::with_capacity(self.selected_real_ids.len());
+        let mut frames = Vec::with_capacity(selected_camera_ids.len());
         let mut first_error = None;
         let mut ok_count = 0;
         // Collected during the loop and acted on after it: `real_sources` is
@@ -58,9 +108,11 @@ impl CameraManApp {
         // from inside it.
         let mut new_failures = Vec::new();
         let mut recovered_ids = Vec::new();
-        for id in &self.selected_real_ids {
+        for id in selected_camera_ids {
             let Some((_, source, streak)) =
-                self.real_sources.iter_mut().find(|(sid, _, _)| sid == id)
+                self.real_sources.iter_mut().find(|(runtime_id, _, _)| {
+                    camera_locators_match(runtime_id, id, &self.real_devices)
+                })
             else {
                 frames.push(None);
                 continue;
@@ -80,7 +132,7 @@ impl CameraManApp {
                     let source_name = self
                         .real_devices
                         .iter()
-                        .find(|device| device.id == *id)
+                        .find(|device| device_has_locator(device, id))
                         .map(|device| device.name.as_str())
                         .unwrap_or(id);
                     if *streak == 0 {
@@ -94,17 +146,14 @@ impl CameraManApp {
             }
         }
 
-        if ok_count == 0 {
-            if let Some((source_name, error)) = first_error {
-                self.on_capture_error(
-                    error.actionable_message(&format!("Read camera {source_name}")),
-                );
-            }
+        if let Some((source_name, error)) =
+            first_error.filter(|_| camera_failure_is_scene_wide(&self.selected_sources, ok_count))
+        {
+            self.on_capture_error(error.actionable_message(&format!("Read camera {source_name}")));
         } else {
-            // Partial failure: at least one camera among several is broken.
-            // Post each newly-failing camera's message once (not every tick)
-            // so it can still expire, and let the working cameras keep
-            // composing instead of aborting the whole preview.
+            // A mixed scene keeps rendering its healthy non-camera cells even
+            // when every camera is down. Each newly failing camera is still
+            // announced once and remains available for bounded reconnect.
             for message in new_failures {
                 self.set_event(message, true);
             }
@@ -122,16 +171,35 @@ impl CameraManApp {
     }
 
     pub(super) fn retry_real_source(&mut self, id: &str) {
-        self.real_sources
-            .retain(|(source_id, _, _)| source_id != id);
+        // Reopen through the existing runtime locator when it is a migrated
+        // alias. Its capture lease then remains identical to the retiring
+        // worker's lease, so Retry cannot open the same physical device twice.
+        let reopen_id = self
+            .real_sources
+            .iter()
+            .find(|(runtime_id, _, _)| camera_locators_match(runtime_id, id, &self.real_devices))
+            .map(|(runtime_id, _, _)| runtime_id.clone())
+            .unwrap_or_else(|| id.to_owned());
+        self.real_sources.retain(|(runtime_id, _, _)| {
+            !camera_locators_match(runtime_id, id, &self.real_devices)
+        });
         if self.running
             && self
-                .selected_real_ids
+                .selected_sources
                 .iter()
-                .any(|source_id| source_id == id)
+                .any(|source| source.kind == SourceKind::Camera && source.locator == id)
         {
-            self.real_sources
-                .push((id.to_owned(), ThreadedNokhwaFrameSource::open_id(id), 0));
+            let capture_target = VideoFormat {
+                width: VIRTUAL_CAMERA_WIDTH,
+                height: VIRTUAL_CAMERA_HEIGHT,
+                fps: self.active_fps,
+                pixel_format: PixelFormat::Bgra8,
+            };
+            self.real_sources.push((
+                reopen_id.clone(),
+                ThreadedNokhwaFrameSource::open_id_with_target(&reopen_id, capture_target),
+                0,
+            ));
         }
         self.capture_error_streak = 0;
         self.sticky_error = None;
@@ -160,17 +228,16 @@ impl CameraManApp {
         let announce = std::mem::take(&mut self.announce_discovery_result);
         match result {
             Ok(devices) => {
+                self.migrate_camera_aliases(&devices);
                 self.real_devices = devices;
-                let known_ids = self
-                    .real_devices
-                    .iter()
-                    .map(|device| device.id.clone())
-                    .collect::<Vec<_>>();
                 // Preserve the user's scene when a camera disappears. The
                 // missing-source policy remains in force until discovery sees
                 // the same stable id again.
-                self.real_sources
-                    .retain(|(id, _, _)| known_ids.contains(id));
+                self.real_sources.retain(|(runtime_id, _, _)| {
+                    self.real_devices
+                        .iter()
+                        .any(|device| device_has_locator(device, runtime_id))
+                });
                 if announce {
                     if self.real_devices.is_empty() {
                         self.set_event("No cameras found", true);
@@ -189,9 +256,182 @@ impl CameraManApp {
             }
         }
 
-        if self.input_mode == InputMode::Real && self.running {
+        if self.running {
             self.invalidate_render_epoch();
             self.request_render(ctx, self.running, true);
         }
+    }
+
+    fn migrate_camera_aliases(&mut self, devices: &[CameraDevice]) {
+        let remapped = remap_camera_aliases(
+            &mut self.selected_sources,
+            &mut self.source_transforms,
+            devices,
+        );
+        if let Some(selected) = self.selected_source_id.as_mut()
+            && let Some(current) = remapped.get(selected)
+        {
+            *selected = current.clone();
+        }
+        for (legacy, current) in &remapped {
+            if let Some(frame) = self.last_good_frames.remove(legacy) {
+                self.last_good_frames
+                    .entry(current.clone())
+                    .or_insert(frame);
+            }
+        }
+        for scene in &mut self.scenes {
+            remap_camera_aliases(&mut scene.sources, &mut scene.source_transforms, devices);
+        }
+    }
+}
+
+fn device_has_locator(device: &CameraDevice, locator: &str) -> bool {
+    device.id == locator || device.aliases.iter().any(|alias| alias == locator)
+}
+
+pub(super) fn camera_locators_match(left: &str, right: &str, devices: &[CameraDevice]) -> bool {
+    left == right
+        || devices
+            .iter()
+            .any(|device| device_has_locator(device, left) && device_has_locator(device, right))
+}
+
+fn resolve_ordered_sources<T, E>(
+    descriptors: &[SourceDescriptor],
+    mut cameras: Vec<(String, Option<T>)>,
+    mut synthetic_frame: impl FnMut(&str) -> Result<Option<T>, E>,
+) -> Result<Vec<Option<T>>, E> {
+    descriptors
+        .iter()
+        .map(|descriptor| match descriptor.kind {
+            SourceKind::Synthetic => synthetic_frame(&descriptor.locator),
+            SourceKind::Camera => Ok(cameras
+                .iter_mut()
+                .find(|(locator, _)| locator == &descriptor.locator)
+                .and_then(|(_, frame)| frame.take())),
+        })
+        .collect()
+}
+
+fn camera_failure_is_scene_wide(
+    sources: &[SourceDescriptor],
+    camera_frames_received: usize,
+) -> bool {
+    camera_frames_received == 0
+        && !sources.is_empty()
+        && sources
+            .iter()
+            .all(|source| source.kind == SourceKind::Camera)
+}
+
+fn remap_camera_aliases(
+    sources: &mut Vec<SourceDescriptor>,
+    transforms: &mut BTreeMap<String, SourceTransform>,
+    devices: &[CameraDevice],
+) -> HashMap<String, String> {
+    let mut remapped = HashMap::new();
+    for source in sources
+        .iter_mut()
+        .filter(|source| source.kind == SourceKind::Camera)
+    {
+        let Some(current_id) = devices.iter().find_map(|device| {
+            device
+                .aliases
+                .iter()
+                .any(|alias| alias == &source.locator)
+                .then_some(device.id.clone())
+        }) else {
+            continue;
+        };
+        let legacy_key = source.stable_key();
+        source.locator = current_id;
+        let current_key = source.stable_key();
+        if let Some(transform) = transforms.remove(&legacy_key) {
+            transforms.entry(current_key.clone()).or_insert(transform);
+        }
+        remapped.insert(legacy_key, current_key);
+    }
+
+    let mut seen = HashSet::new();
+    sources.retain(|source| seen.insert(source.stable_key()));
+    remapped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heterogeneous_sources_keep_scene_order_and_missing_cells() {
+        let descriptors = [
+            SourceDescriptor::camera("built-in"),
+            SourceDescriptor::synthetic("video-like"),
+            SourceDescriptor::camera("missing"),
+        ];
+        let cameras = vec![(String::from("built-in"), Some("camera"))];
+
+        assert_eq!(
+            resolve_ordered_sources(&descriptors, cameras, |locator| {
+                Ok::<_, ()>((locator == "video-like").then_some("video"))
+            })
+            .unwrap(),
+            [Some("camera"), Some("video"), None]
+        );
+    }
+
+    #[test]
+    fn camera_failure_is_scene_wide_only_for_an_all_camera_scene() {
+        assert!(camera_failure_is_scene_wide(
+            &[SourceDescriptor::camera("built-in")],
+            0
+        ));
+        assert!(!camera_failure_is_scene_wide(
+            &[
+                SourceDescriptor::camera("built-in"),
+                SourceDescriptor::synthetic("video-like"),
+            ],
+            0
+        ));
+        assert!(!camera_failure_is_scene_wide(
+            &[SourceDescriptor::camera("built-in")],
+            1
+        ));
+    }
+
+    #[test]
+    fn discovery_migrates_legacy_camera_ids_and_transform_keys() {
+        let mut sources = vec![
+            SourceDescriptor::camera("0"),
+            SourceDescriptor::synthetic("desk"),
+        ];
+        let transform = SourceTransform {
+            mirror_horizontal: true,
+            ..SourceTransform::default()
+        };
+        let mut transforms = BTreeMap::from([(String::from("camera:0"), transform)]);
+        let devices = [CameraDevice::with_aliases(
+            "uid:stable-camera",
+            "Camera",
+            vec![String::from("0")],
+        )];
+
+        let remapped = remap_camera_aliases(&mut sources, &mut transforms, &devices);
+
+        assert_eq!(sources[0], SourceDescriptor::camera("uid:stable-camera"));
+        assert_eq!(remapped["camera:0"], "camera:uid:stable-camera");
+        assert!(transforms["camera:uid:stable-camera"].mirror_horizontal);
+    }
+
+    #[test]
+    fn legacy_and_stable_camera_locators_share_one_runtime_identity() {
+        let devices = [CameraDevice::with_aliases(
+            "uid:stable-camera",
+            "Camera",
+            vec![String::from("0")],
+        )];
+
+        assert!(camera_locators_match("0", "uid:stable-camera", &devices));
+        assert!(!camera_locators_match("1", "uid:stable-camera", &devices));
     }
 }

@@ -25,19 +25,9 @@ impl eframe::App for CameraManApp {
         self.drive_virtual_camera_self_test(ctx);
 
         if self.running && self.fixture_state.is_none() {
-            let now = Instant::now();
-            if now.duration_since(self.last_frame_at) >= self.frame_interval() {
-                let interval = self.frame_interval();
-                self.last_frame_at += interval;
-                if now.duration_since(self.last_frame_at) > interval * 3 {
-                    self.last_frame_at = now;
-                }
+            if self.media_clock.take_tick() {
                 self.request_render(ctx, true, false);
             }
-            let interval = self.frame_interval();
-            let until_next =
-                interval.saturating_sub(Instant::now().duration_since(self.last_frame_at));
-            ctx.request_repaint_after(until_next.min(interval));
         } else if self.notice.as_ref().is_some_and(StatusEvent::is_visible) {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
@@ -219,40 +209,22 @@ impl CameraManApp {
                 ui.separator();
                 ui.add_space(8.0);
                 ui.label(tr(self.locale, UiText::Sources));
-                let mut input_mode = self.input_mode;
-                let segment_width =
-                    ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(1.0);
-                ui.horizontal(|ui| {
-                    for (mode, label) in [
-                        (InputMode::Synthetic, tr(self.locale, UiText::Synthetic)),
-                        (InputMode::Real, tr(self.locale, UiText::Real)),
-                    ] {
-                        if ui
-                            .add_sized(
-                                [segment_width, 36.0],
-                                egui::Button::selectable(input_mode == mode, label).wrap(),
-                            )
-                            .clicked()
-                        {
-                            input_mode = mode;
-                        }
-                    }
-                });
-                if let Some(change) =
-                    self.apply_scene_command(SceneEditCommand::SetInputMode(input_mode))
-                {
-                    if input_mode == InputMode::Real {
-                        self.start_camera_discovery(false);
-                    }
-                    self.sticky_error = None;
-                    self.refresh_scene_render(ctx, change);
-                }
-
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(tr(self.locale, UiText::Synthetic))
+                        .small()
+                        .color(COLOR_DIM),
+                );
+                self.synthetic_sources_ui(ui, ctx);
                 ui.add_space(8.0);
-                match self.input_mode {
-                    InputMode::Synthetic => self.synthetic_sources_ui(ui, ctx),
-                    InputMode::Real => self.real_sources_ui(ui, ctx),
-                }
+                ui.separator();
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(tr(self.locale, UiText::Real))
+                        .small()
+                        .color(COLOR_DIM),
+                );
+                self.real_sources_ui(ui, ctx);
                 self.transform_inspector_ui(ui, ctx);
             });
     }
@@ -265,9 +237,13 @@ impl CameraManApp {
             let id = self.sources[index].id.to_owned();
             let name = self.sources[index].name;
             let bgra = self.sources[index].bgra;
-            let mut checked = self.sources[index].selected;
-            let order = selected_ids.iter().position(|selected| selected == &id);
-            let selected = self.selected_source_id.as_deref() == Some(&id);
+            let descriptor = SourceDescriptor::synthetic(&id);
+            let stable_key = descriptor.stable_key();
+            let mut checked = self.selected_sources.contains(&descriptor);
+            let order = selected_ids
+                .iter()
+                .position(|selected| selected == &stable_key);
+            let selected = self.selected_source_id.as_deref() == Some(stable_key.as_str());
             ui.push_id(("source", &id), |ui| {
                 ui.horizontal(|ui| {
                     let (swatch, _) = ui.allocate_exact_size(
@@ -300,10 +276,14 @@ impl CameraManApp {
                         .on_hover_text(name)
                         .clicked()
                     {
-                        self.selected_source_id = Some(id.clone());
+                        self.selected_source_id = Some(stable_key.clone());
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        health_label(ui, SourceHealthVector::synthetic(self.running), self.locale);
+                        health_label(
+                            ui,
+                            SourceHealthVector::synthetic(self.running && checked),
+                            self.locale,
+                        );
                         if let Some(position) = order {
                             ui.label(
                                 egui::RichText::new(format!("#{}", position + 1))
@@ -328,10 +308,10 @@ impl CameraManApp {
                     });
                 }
             });
-            if checked != self.sources[index].selected
+            if checked != self.selected_sources.contains(&descriptor)
                 && let Some(change) =
                     self.apply_scene_command(SceneEditCommand::SetSourceSelected {
-                        source_id: id,
+                        source: descriptor,
                         selected: checked,
                     })
             {
@@ -388,17 +368,19 @@ impl CameraManApp {
         }
 
         let devices = self.real_devices.clone();
-        let selected_ids = self.selected_real_ids.clone();
+        let selected_ids = self.selected_source_ids();
         let mut selection_changed = false;
         let mut reorder = None;
         let mut retry_id = None;
         for device in devices {
-            let mut checked = selected_ids.contains(&device.id);
-            let order = selected_ids.iter().position(|id| id == &device.id);
+            let descriptor = SourceDescriptor::camera(&device.id);
+            let stable_key = descriptor.stable_key();
+            let mut checked = self.selected_sources.contains(&descriptor);
+            let order = selected_ids.iter().position(|id| id == &stable_key);
             let runtime = self
                 .real_sources
                 .iter()
-                .find(|(id, _, _)| id == &device.id)
+                .find(|(id, _, _)| camera_locators_match(id, &device.id, &self.real_devices))
                 .map(|(_, source, streak)| (*streak, source.negotiated_format()));
             let health = match (checked, self.running, runtime) {
                 (false, _, _) => SourceHealthVector::off(),
@@ -409,7 +391,7 @@ impl CameraManApp {
                 (true, true, _) => SourceHealthVector::waiting(),
                 (true, false, _) => SourceHealthVector::off(),
             };
-            let selected = self.selected_source_id.as_deref() == Some(device.id.as_str());
+            let selected = self.selected_source_id.as_deref() == Some(stable_key.as_str());
             ui.push_id(("real-source", &device.id), |ui| {
                 ui.horizontal(|ui| {
                     let selection_label =
@@ -435,7 +417,7 @@ impl CameraManApp {
                         .on_hover_text(&device.name)
                         .clicked()
                     {
-                        self.selected_source_id = Some(device.id.clone());
+                        self.selected_source_id = Some(stable_key.clone());
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         health_label(ui, health, self.locale);
@@ -492,10 +474,10 @@ impl CameraManApp {
                     );
                 }
             });
-            if checked != selected_ids.contains(&device.id)
+            if checked != self.selected_sources.contains(&descriptor)
                 && self
                     .apply_scene_command(SceneEditCommand::SetSourceSelected {
-                        source_id: device.id.clone(),
+                        source: descriptor,
                         selected: checked,
                     })
                     .is_some()
@@ -509,29 +491,80 @@ impl CameraManApp {
             .iter()
             .map(|device| device.id.as_str())
             .collect::<HashSet<_>>();
-        for id in self
-            .selected_real_ids
+        let missing_cameras = self
+            .selected_sources
             .iter()
-            .filter(|id| !known.contains(id.as_str()))
-        {
-            ui.push_id(("missing-source", id), |ui| {
+            .filter(|source| {
+                source.kind == SourceKind::Camera && !known.contains(source.locator.as_str())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for descriptor in missing_cameras {
+            let stable_key = descriptor.stable_key();
+            let id = descriptor.locator.clone();
+            let order = selected_ids.iter().position(|id| id == &stable_key);
+            let selected = self.selected_source_id.as_deref() == Some(stable_key.as_str());
+            let mut checked = true;
+            ui.push_id(("missing-source", &id), |ui| {
                 ui.horizontal(|ui| {
-                    health_label(ui, SourceHealthVector::missing(), self.locale);
-                    let name_width = ui.available_width().max(72.0);
+                    let selection_label = format!("{} {id}", tr(self.locale, UiText::SelectSource));
+                    let selection = ui.add(egui::Checkbox::without_text(&mut checked));
+                    selection.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::Checkbox,
+                            true,
+                            checked,
+                            &selection_label,
+                        )
+                    });
+                    selection.on_hover_text(&selection_label);
+                    let name_width = (ui.available_width() - 108.0).max(72.0);
                     if ui
                         .add_sized(
                             [name_width, MIN_POINTER_TARGET],
-                            egui::Button::new(id)
-                                .selected(self.selected_source_id.as_deref() == Some(id))
-                                .truncate(),
+                            egui::Button::new(&id).selected(selected).truncate(),
                         )
-                        .on_hover_text(id)
+                        .on_hover_text(&id)
                         .clicked()
                     {
-                        self.selected_source_id = Some(id.clone());
+                        self.selected_source_id = Some(stable_key.clone());
                     }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        health_label(ui, SourceHealthVector::missing(), self.locale);
+                        if let Some(position) = order {
+                            ui.label(
+                                egui::RichText::new(format!("#{}", position + 1))
+                                    .small()
+                                    .color(COLOR_DIM),
+                            );
+                        }
+                    });
                 });
+                if selected && let Some(position) = order {
+                    ui.horizontal(|ui| {
+                        ui.add_space(34.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            reorder_buttons(
+                                ui,
+                                position,
+                                selected_ids.len(),
+                                self.locale,
+                                &mut reorder,
+                            );
+                        });
+                    });
+                }
             });
+            if !checked
+                && self
+                    .apply_scene_command(SceneEditCommand::SetSourceSelected {
+                        source: descriptor,
+                        selected: false,
+                    })
+                    .is_some()
+            {
+                selection_changed = true;
+            }
         }
 
         if let Some((from, to)) = reorder {
@@ -619,9 +652,18 @@ impl CameraManApp {
 
     fn paint_preview_badges(&self, ui: &egui::Ui, rect: egui::Rect) {
         let painter = ui.painter();
-        let mode = match self.input_mode {
-            InputMode::Synthetic => tr(self.locale, UiText::Synthetic).to_uppercase(),
-            InputMode::Real => tr(self.locale, UiText::Real).to_uppercase(),
+        let has_camera = self
+            .selected_sources
+            .iter()
+            .any(|source| source.kind == SourceKind::Camera);
+        let has_synthetic = self
+            .selected_sources
+            .iter()
+            .any(|source| source.kind == SourceKind::Synthetic);
+        let mode = match (has_synthetic, has_camera) {
+            (true, true) => String::from("MIXED"),
+            (false, true) => tr(self.locale, UiText::Real).to_uppercase(),
+            _ => tr(self.locale, UiText::Synthetic).to_uppercase(),
         };
         let state = if self.running {
             tr(self.locale, UiText::Live)
@@ -714,10 +756,10 @@ impl CameraManApp {
                 ui.separator();
                 ui.label(format!("p95 {compose_p95:.1}/{publish_p95:.1} ms"))
                     .on_hover_text(&details);
-                if self.stale_source_count > 0 {
+                if self.missing_source_count > 0 {
                     ui.separator();
                     ui.label(
-                        egui::RichText::new(format!("stale {}", self.stale_source_count))
+                        egui::RichText::new(format!("missing {}", self.missing_source_count))
                             .color(COLOR_WARNING),
                     )
                     .on_hover_text(tr(self.locale, UiText::SourceMissingOrStale));

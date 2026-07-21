@@ -234,7 +234,7 @@ impl CameraManApp {
                 egui::RichText::new(format!(
                     "{} · {} source(s) · schema {}",
                     scene.name,
-                    scene.source_ids.len(),
+                    scene.sources.len(),
                     scene.schema_version
                 ))
                 .color(COLOR_OK),

@@ -83,12 +83,7 @@ mod tests {
         let mut worker = CameraDiscoveryWorker::new();
         assert!(
             worker
-                .start_with(|| {
-                    Ok(vec![CameraDevice {
-                        id: String::from("camera-1"),
-                        name: String::from("Camera One"),
-                    }])
-                })
+                .start_with(|| { Ok(vec![CameraDevice::new("camera-1", "Camera One")]) })
                 .unwrap()
         );
 
@@ -123,10 +118,7 @@ mod tests {
         worker
             .start_with(move || {
                 release_receiver.recv().unwrap();
-                Ok(vec![CameraDevice {
-                    id: String::from("late-camera"),
-                    name: String::from("Late Camera"),
-                }])
+                Ok(vec![CameraDevice::new("late-camera", "Late Camera")])
             })
             .unwrap();
 

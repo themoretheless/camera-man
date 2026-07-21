@@ -2,25 +2,27 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use camera_man::{
-    CompositionLayout, MissingSourcePolicy, PREFERENCES_PARSER_LIMITS, ScalingFilter,
-    SceneDocument, SourceTransform, VIRTUAL_CAMERA_FPS_PRESETS, read_bounded,
-    replace_file_atomically, validate_json_envelope,
+    CompositionLayout, MAX_SOURCE_KEY_BYTES, MissingSourcePolicy, PREFERENCES_PARSER_LIMITS,
+    ScalingFilter, SceneDocument, SourceDescriptor, SourceKind, SourceTransform,
+    VIRTUAL_CAMERA_FPS_PRESETS, read_bounded, replace_file_atomically, validate_json_envelope,
 };
 use serde::{Deserialize, Serialize};
 
 const STORAGE_KEY: &str = "camera-man-preferences-v1";
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 4;
 const MAX_PREFERENCES_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const DEFAULT_EXPORT_PATH: &str = "target/camera-man-app-preview.ppm";
+// Keep the canonical path stable; the embedded schema version performs migration.
 const PREFERENCES_FILE_NAME: &str = "preferences-v3.json";
 
 pub(crate) fn default_preferences_path() -> Option<PathBuf> {
     eframe::storage_dir("CameraMan").map(|directory| directory.join(PREFERENCES_FILE_NAME))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum InputMode {
+pub(crate) enum LegacyInputMode {
+    #[default]
     Synthetic,
     Real,
 }
@@ -51,9 +53,14 @@ pub(crate) enum FpsMode {
 pub(crate) struct AppPreferences {
     #[serde(default = "legacy_schema_version")]
     pub(crate) schema_version: u32,
-    pub(crate) input_mode: InputMode,
-    pub(crate) selected_synthetic_ids: Vec<String>,
-    pub(crate) selected_real_ids: Vec<String>,
+    #[serde(default)]
+    pub(crate) selected_sources: Vec<SourceDescriptor>,
+    #[serde(default, rename = "input_mode", skip_serializing)]
+    pub(crate) legacy_input_mode: LegacyInputMode,
+    #[serde(default, rename = "selected_synthetic_ids", skip_serializing)]
+    pub(crate) legacy_selected_synthetic_ids: Vec<String>,
+    #[serde(default, rename = "selected_real_ids", skip_serializing)]
+    pub(crate) legacy_selected_real_ids: Vec<String>,
     pub(crate) layout: CompositionLayout,
     pub(crate) scaling_filter: ScalingFilter,
     pub(crate) fps_mode: FpsMode,
@@ -71,13 +78,14 @@ impl Default for AppPreferences {
     fn default() -> Self {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
-            input_mode: InputMode::Synthetic,
-            selected_synthetic_ids: vec![
-                String::from("desk"),
-                String::from("side"),
-                String::from("wide"),
+            selected_sources: vec![
+                SourceDescriptor::synthetic("desk"),
+                SourceDescriptor::synthetic("side"),
+                SourceDescriptor::synthetic("wide"),
             ],
-            selected_real_ids: Vec::new(),
+            legacy_input_mode: LegacyInputMode::Synthetic,
+            legacy_selected_synthetic_ids: Vec::new(),
+            legacy_selected_real_ids: Vec::new(),
             layout: CompositionLayout::Grid,
             scaling_filter: ScalingFilter::Nearest,
             fps_mode: FpsMode::Auto,
@@ -153,8 +161,7 @@ impl AppPreferences {
     }
 
     fn sanitized(mut self) -> Self {
-        self.selected_synthetic_ids = sanitized_ids(self.selected_synthetic_ids);
-        self.selected_real_ids = sanitized_ids(self.selected_real_ids);
+        self.selected_sources = sanitized_sources(self.selected_sources);
         if matches!(self.fps_mode, FpsMode::Fixed(fps) if !VIRTUAL_CAMERA_FPS_PRESETS.contains(&fps))
         {
             self.fps_mode = FpsMode::Auto;
@@ -163,12 +170,17 @@ impl AppPreferences {
             self.export_path = PathBuf::from(DEFAULT_EXPORT_PATH);
         }
         self.source_transforms.retain(|id, transform| {
-            !id.is_empty() && id.len() <= 256 && transform.validate().is_ok()
+            !id.is_empty() && id.len() <= MAX_SOURCE_KEY_BYTES && transform.validate().is_ok()
         });
         let mut scene_names = HashSet::new();
-        self.scenes.retain(|scene| {
-            scene.to_json_pretty().is_ok() && scene_names.insert(scene.name.clone())
-        });
+        self.scenes = self
+            .scenes
+            .into_iter()
+            .filter_map(|scene| scene.into_current().ok())
+            .filter(|scene| {
+                scene.to_json_pretty().is_ok() && scene_names.insert(scene.name.clone())
+            })
+            .collect();
         self.scenes.truncate(32);
         if self
             .active_scene_name
@@ -190,9 +202,40 @@ impl AppPreferences {
                 // defaults already materialize those fields for old data.
                 0 | 1 => self.schema_version = 2,
                 2 => self.schema_version = 3,
+                3 => {
+                    if self.selected_sources.is_empty() {
+                        let (kind, ids) = match self.legacy_input_mode {
+                            LegacyInputMode::Synthetic => (
+                                SourceKind::Synthetic,
+                                std::mem::take(&mut self.legacy_selected_synthetic_ids),
+                            ),
+                            LegacyInputMode::Real => (
+                                SourceKind::Camera,
+                                std::mem::take(&mut self.legacy_selected_real_ids),
+                            ),
+                        };
+                        self.selected_sources = ids
+                            .into_iter()
+                            .map(|locator| SourceDescriptor { kind, locator })
+                            .collect();
+                    }
+                    remap_legacy_transform_keys(
+                        &self.selected_sources,
+                        &mut self.source_transforms,
+                    );
+                    self.scenes = self
+                        .scenes
+                        .into_iter()
+                        .filter_map(|scene| scene.into_current().ok())
+                        .collect();
+                    self.schema_version = 4;
+                }
                 _ => return Self::default(),
             }
         }
+        self.legacy_input_mode = LegacyInputMode::Synthetic;
+        self.legacy_selected_synthetic_ids.clear();
+        self.legacy_selected_real_ids.clear();
         self
     }
 }
@@ -201,13 +244,25 @@ const fn legacy_schema_version() -> u32 {
     1
 }
 
-fn sanitized_ids(ids: Vec<String>) -> Vec<String> {
+fn sanitized_sources(sources: Vec<SourceDescriptor>) -> Vec<SourceDescriptor> {
     let mut seen = HashSet::new();
-    ids.into_iter()
-        .filter(|id| !id.is_empty() && id.len() <= 256)
-        .filter(|id| seen.insert(id.clone()))
+    sources
+        .into_iter()
+        .filter(|source| source.validate().is_ok())
+        .filter(|source| seen.insert(source.stable_key()))
         .take(64)
         .collect()
+}
+
+fn remap_legacy_transform_keys(
+    sources: &[SourceDescriptor],
+    transforms: &mut BTreeMap<String, SourceTransform>,
+) {
+    for source in sources {
+        if let Some(transform) = transforms.remove(&source.locator) {
+            transforms.entry(source.stable_key()).or_insert(transform);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -237,8 +292,7 @@ mod tests {
     #[test]
     fn preferences_round_trip_without_runtime_state() {
         let preferences = AppPreferences {
-            input_mode: InputMode::Real,
-            selected_real_ids: vec![String::from("camera-2")],
+            selected_sources: vec![SourceDescriptor::camera("camera-2")],
             layout: CompositionLayout::Row,
             scaling_filter: ScalingFilter::Bilinear,
             fps_mode: FpsMode::Fixed(60),
@@ -255,10 +309,10 @@ mod tests {
     #[test]
     fn corrupted_preferences_are_bounded_and_repaired() {
         let preferences = AppPreferences {
-            selected_real_ids: vec![
-                String::from("camera-1"),
-                String::from("camera-1"),
-                String::new(),
+            selected_sources: vec![
+                SourceDescriptor::camera("camera-1"),
+                SourceDescriptor::camera("camera-1"),
+                SourceDescriptor::camera(""),
             ],
             fps_mode: FpsMode::Fixed(0),
             export_path: PathBuf::new(),
@@ -266,7 +320,10 @@ mod tests {
         }
         .sanitized();
 
-        assert_eq!(preferences.selected_real_ids, ["camera-1"]);
+        assert_eq!(
+            preferences.selected_sources,
+            [SourceDescriptor::camera("camera-1")]
+        );
         assert_eq!(preferences.fps_mode, FpsMode::Auto);
         assert_eq!(preferences.export_path, PathBuf::from(DEFAULT_EXPORT_PATH));
     }
@@ -313,6 +370,40 @@ mod tests {
             .unwrap()
             .migrated();
         assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            migrated.selected_sources,
+            [SourceDescriptor::synthetic("desk")]
+        );
+    }
+
+    #[test]
+    fn v3_real_preferences_preserve_camera_and_transform() {
+        let json = r#"{
+            "schema_version":3,
+            "input_mode":"real",
+            "selected_synthetic_ids":["desk"],
+            "selected_real_ids":["camera-7"],
+            "layout":"grid",
+            "scaling_filter":"nearest",
+            "fps_mode":"auto",
+            "virtual_output_enabled":true,
+            "export_path":"target/legacy.ppm",
+            "source_transforms":{"camera-7":{"mirror_horizontal":true}}
+        }"#;
+
+        let migrated = serde_json::from_str::<AppPreferences>(json)
+            .unwrap()
+            .migrated()
+            .sanitized();
+
+        assert_eq!(
+            migrated.selected_sources,
+            [SourceDescriptor::camera("camera-7")]
+        );
+        assert!(migrated.source_transforms["camera:camera-7"].mirror_horizontal);
+        let encoded = serde_json::to_string(&migrated).unwrap();
+        assert!(!encoded.contains("input_mode"));
+        assert!(!encoded.contains("selected_real_ids"));
     }
 
     #[test]
@@ -320,7 +411,7 @@ mod tests {
         let directory = temporary_directory("round-trip");
         let path = directory.join("preferences.json");
         let preferences = AppPreferences {
-            selected_synthetic_ids: vec![String::from("wide")],
+            selected_sources: vec![SourceDescriptor::synthetic("wide")],
             layout: CompositionLayout::PictureInPicture,
             ..AppPreferences::default()
         };
@@ -361,7 +452,7 @@ mod tests {
         let previous_bytes = std::fs::read(&path).unwrap();
         let invalid = AppPreferences {
             schema_version: CURRENT_SCHEMA_VERSION,
-            selected_real_ids: vec![String::new()],
+            selected_sources: vec![SourceDescriptor::camera("")],
             ..AppPreferences::default()
         };
 

@@ -11,7 +11,7 @@ fn wire_and_media_contract_changes_are_explicit_review_events() {
     assert_eq!(SHARED_PROTOCOL_VERSION, 5);
     assert_eq!(SHARED_PROTOCOL_SLOT_COUNT, 3);
     assert_eq!(WirePixelFormat::Bgra8.code(), 1);
-    assert_eq!(SCENE_SCHEMA_VERSION, 3);
+    assert_eq!(SCENE_SCHEMA_VERSION, 4);
     assert_eq!(COLOR_CONTRACT_SCHEMA_VERSION, 1);
     assert_eq!(Colorimetry::BT709_FULL_OPAQUE.schema_version, 1);
     assert_eq!(Colorimetry::BT709_FULL_OPAQUE.bit_depth, 8);

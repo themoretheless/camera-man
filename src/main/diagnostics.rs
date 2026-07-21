@@ -362,7 +362,6 @@ pub(super) fn print_help() {
     println!("  app                    Launch the Rust desktop app");
     println!("  status                 Print project and output status");
     println!("  demo [path]            Render one synthetic composed PPM frame");
-    println!("  pipeline-demo [dir]    Render three frames through PipelineEngine");
     println!("  list-cameras           Query real cameras through nokhwa");
     println!("  capture-demo [path]    Capture one real camera frame into PPM");
     println!("  bundle                 Create target/CameraMan.app (prefer a release build)");

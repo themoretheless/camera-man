@@ -25,7 +25,7 @@ Exactly 700 numbered items: done work, improvements, problems, mistakes, design 
 19. Сделано: `SyntheticFrameSource` даёт стабильные тестовые источники.
 20. Сделано: CLI `status` показывает текущий backend.
 21. Сделано: CLI `demo` пишет один PPM.
-22. Сделано: CLI `pipeline-demo` пишет последовательность PPM.
+22. Сделано: standalone Rust example `pipeline_demo` пишет последовательность PPM вне production app runtime.
 23. Сделано: CLI `check` печатает нормализованный config.
 24. Сделано: тесты покрывают frame validation.
 25. Сделано: тесты покрывают layout calculation.
@@ -77,8 +77,8 @@ Exactly 700 numbered items: done work, improvements, problems, mistakes, design 
 71. Проверено: typed homogeneous list не подходит multi-backend pipeline без усложнения API.
 72. Ограничение: dynamic dispatch остаётся, но capture/render cost существенно выше одного vtable call.
 73. Сделано: boxed API документирован как plugin-like extension boundary.
-74. Решение: core `PipelineEngine` синхронный, app render loop принадлежит `RenderWorker`.
-75. Сделано: отдельный `RenderWorker` владеет app compositor и virtual sink.
+74. Решение: core `PipelineEngine` оставлен синхронным SDK/example harness и удалён из production CLI-маршрута; app runtime имеет один путь через `RenderWorker`.
+75. Сделано: `MediaClock` владеет cadence, а отдельный `RenderWorker` владеет app compositor и virtual sink.
 76. Сделано частично: worker имеет stop state и latest-job cancellation; in-flight compose не прерывается внутри строки.
 77. Сделано: один replaceable pending slot ограничивает очередь render jobs.
 78. Сделано: backpressure заменяет старый pending job самым новым.
@@ -198,7 +198,7 @@ Exactly 700 numbered items: done work, improvements, problems, mistakes, design 
 189. Сделано: UI различает missing, valid и invalid provisioning profile.
 190. Сделано: signing state links directly to matching troubleshooting section.
 191. Исправлено: bounded app preferences persist through eframe storage.
-192. Сделано: input mode and stable selected source ids persist.
+192. Сделано: schema v4 сохраняет единый ordered list типизированных source descriptors; legacy input mode и отдельные id-list мигрируются последовательно.
 193. Сделано: selected layout and scaling filter persist.
 194. Сделано: Auto/fixed fps mode persists with 1–240 validation.
 195. Сделано: export path editable and persists; empty stored path is repaired.
@@ -253,8 +253,8 @@ Exactly 700 numbered items: done work, improvements, problems, mistakes, design 
 244. Улучшение: document backend limitation clearly.
 245. Проблема: Continuity Camera behavior may differ from built-in camera.
 246. Улучшение: add device-specific diagnostics.
-247. Проблема: no camera format selection.
-248. Улучшение: expose resolution/fps choices later.
+247. Исправлено: capture больше не принимает backend default или абсолютный max-FPS; target-aware negotiation проверяет output geometry/rate для каждого декодируемого формата.
+248. Улучшение: позже показать пользователю только подтверждённые hardware presets и понятную ошибку renegotiation; текущий runtime автоматически следует output contract.
 249. Проблема: `SOURCE_WIDTH`/`SOURCE_HEIGHT` fixed for synthetic.
 250. Улучшение: allow synthetic test resolution presets.
 251. Сделано: app preview больше не загружает full 1080p texture.
@@ -1174,3 +1174,22 @@ The additional work also ran as three bounded review iterations:
   evidence, remaining priority order and a crate-by-crate Rust-only greenfield
   architecture. Physical camera/CMIO, full soak and paid release gates remain
   external and are not claimed as complete.
+
+## Twenty-Fourth Review Pass: Typed Source Runtime
+
+- Iteration one replaced the global synthetic/real mode and parallel id arrays
+  with schema-v4 ordered `SourceDescriptor` values. Preferences and scenes
+  migrate legacy selections and transform keys without serializing workers.
+- Iteration two made selection, reorder, missing-source policy, scene commands,
+  Undo/Redo and composition operate on the same heterogeneous graph. Generated
+  and physical-camera sources can now share one scene.
+- Iteration three moved cadence into an owned `MediaClock`, removed the second
+  production pipeline route, and retained `PipelineEngine` only as a Rust SDK
+  example and test harness.
+- Final review fixed false synthetic health state, removed per-tick lookup-map
+  allocation, preserved mixed output when one camera fails, migrated physical
+  cameras to stable AVFoundation `uniqueID` locators and negotiated the target
+  camera format. It also aligned scene/source parser limits, kept reconnect in
+  error state until the first new frame, and made legacy/stable camera aliases
+  share one Retry lease identity. The 700 numbered recommendations remain
+  exactly 1 through 700.

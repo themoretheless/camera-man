@@ -87,6 +87,14 @@ Ledger показывает две полнокадровые записи до 
   source 30 FPS и output 60 FPS CMIO повторяет уже готовый buffer.
 - Nokhwa decode теперь получает RGBA и меняет R/B in-place вместо выделения
   второго BGRA `Vec`.
+- Capture больше не запрашивает абсолютный максимальный FPS. Последовательно
+  проверяются близкие к output contract разрешение/FPS для всех форматов,
+  которые умеет декодировать RGBA adapter; реальный smoke выбрал 1920x1080@30
+  вместо исходного backend fallback 320x240@1.
+- Камеры сохраняются по AVFoundation `uniqueID`, а старые числовые id остаются
+  migration aliases для preferences, scenes, transforms и уже открытых workers.
+- Отдельный `MediaClock` задаёт абсолютные deadlines и coalesced latest-only
+  ticks независимо от частоты repaint окна.
 - Extension ждёт deadline до transport poll/CV upload, поэтому свежий кадр не
   лежит готовым ещё один полный frame interval перед отправкой.
 - `CVPixelBufferPool` ограничен шестью outstanding buffers. Медленный consumer
@@ -106,10 +114,9 @@ Ledger показывает две полнокадровые записи до 
 | Приоритет | Проблема | Почему важно | Следующее доказательство |
 |---|---|---|---|
 | P0 | Нет физического camera -> signed CMIO -> third-party consumer профиля | Текущий E2E заканчивается перед самым platform-specific участком | Instruments/signposts на FaceTime/OBS/Zoom с paid profile |
-| P0 | Capture выбирает `AbsoluteHighestFrameRate` | Nokhwa затем выбирает самое большое разрешение среди max-FPS форматов; 4K60 может декодироваться ради 1080p30 | Перечислить реальные форматы и выбрать минимальный формат, покрывающий output |
 | P0 | `nokhwa::Camera::frame()` не отменяется | Зависший driver удерживает thread/device и мешает быстрому restart | Direct AVFoundation adapter с контролируемой session queue и stop contract |
 | P0 | mmap publish и CoreVideo upload остаются полными копиями | Это основной гарантированный bandwidth floor | IOSurface-backed prototype без CPU readback, затем реальный signed test |
-| P1 | UI repaint остаётся producer clock | Свёрнутое или перегруженное UI может нерегулярно создавать render jobs | Capture/config-driven runtime thread; UI только наблюдатель |
+| P1 | UI всё ещё оркестрирует capture/render после автономного tick | Cadence уже независим от repaint, но полностью headless media runtime пока не владеет всем pipeline | Перенести capture coordination и render submission в runtime; UI оставить command/observer boundary |
 | P1 | Preview делает BGRA -> `ColorImage` и texture upload | До 2.07 MB CPU conversion плюс GPU upload на preview frame | Отдельный preview benchmark и GPU texture bridge |
 | P1 | Diagnostics span всегда делает tracing, signpost и mutex histogram write | Стоимость мала относительно resize, но пока не изолирована | Microbenchmark enabled/disabled и sampling policy при необходимости |
 | P1 | Sampling cache защищён `Arc<Mutex<_>>` на весь paste | Один worker не конкурирует, но платит lock и усложняет ownership | Worker-owned mutable compositor/cache |

@@ -44,7 +44,12 @@ impl CameraManApp {
                         self.toggle_running(ctx);
                     }
 
-                    let can_render = !self.running && self.input_mode == InputMode::Synthetic;
+                    let can_render = !self.running
+                        && !self.selected_sources.is_empty()
+                        && self
+                            .selected_sources
+                            .iter()
+                            .all(|source| source.kind == SourceKind::Synthetic);
                     let render = ui.add_enabled(
                         can_render,
                         egui::Button::new("↻").min_size(egui::vec2(36.0, 36.0)),

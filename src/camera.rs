@@ -5,6 +5,30 @@ use crate::frame::{CapturedFrame, Frame, FrameMetadata};
 pub struct CameraDevice {
     pub id: String,
     pub name: String,
+    /// Previous/runtime locators that should migrate to `id` when discovered.
+    pub aliases: Vec<String>,
+}
+
+impl CameraDevice {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            aliases: Vec::new(),
+        }
+    }
+
+    pub fn with_aliases(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        aliases: Vec<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            aliases,
+        }
+    }
 }
 
 /// Enumerates camera-like inputs available to a backend.

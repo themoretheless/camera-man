@@ -28,6 +28,7 @@ for scale in 1 2; do
   capture "workspace-${scale}x" workspace en 1120x720 "$scale"
   capture "setup-${scale}x" setup ru 920x560 "$scale"
   capture "empty-${scale}x" empty pseudo-long 920x560 "$scale"
+  capture "mixed-${scale}x" mixed en 1120x720 "$scale"
   capture "disconnected-${scale}x" disconnected ru 1120x720 "$scale"
   capture "install-error-${scale}x" install-error en 920x560 "$scale"
   capture "running-${scale}x" running en 1440x900 "$scale"

@@ -1,9 +1,9 @@
 # CameraMan
 
-CameraMan is a Rust-only macOS camera compositor. It reads selected camera
-sources, composes them into one BGRA frame, previews that frame in a desktop
-app, and publishes the latest composed output to a Rust CoreMediaIO system
-extension prototype.
+CameraMan is a Rust-only macOS camera compositor. It reads an ordered graph of
+generated and physical-camera sources, composes them into one BGRA frame,
+previews that frame in a desktop app, and publishes the latest composed output
+to a Rust CoreMediaIO system extension prototype.
 
 ## What Works
 
@@ -11,7 +11,9 @@ extension prototype.
 - The app launches with `cargo run`.
 - Synthetic sources compose into a 1920x1080 output frame; the display preview is independently capped at 960x540 and 30 fps.
 - Real camera discovery and capture use `nokhwa`.
-- Real mode supports multiple selected cameras.
+- AVFoundation cameras persist by their stable `uniqueID` (`uid:<value>`); discovery aliases migrate old numeric selections, scene transforms and active workers without duplicating a device.
+- Camera open negotiates against the requested output geometry and rate for every decodable format before using bounded fallbacks. A hardware smoke on the LG camera selected 1920x1080 at 30 fps instead of the former 320x240 fallback.
+- Cameras and generated sources can be selected together in one ordered scene.
 - The app can start/stop preview, switch layout, switch fps mode, export PPM, and publish virtual-output frames.
 - Named scenes persist source order, layout, output settings, missing-source policy and typed per-source crop/fit/fill/mirror/rotate/opacity/position transforms.
 - Scene edits are transactional with bounded Undo/Redo: a pointer drag is coalesced into one history step instead of consuming the stack one frame at a time.
@@ -20,13 +22,14 @@ extension prototype.
 - The Sources -> Preview -> Output workspace has a separate setup window, bounded RU/EN control text, high-contrast state, keyboard reorder, explicit AccessKit names and automated workspace/Setup minimum-window plus Retina fixture captures. Machine-oriented diagnostic payloads remain stable English.
 - Virtual Camera Self-Test publishes a color-bar pattern and waits for the extension's exact generation/sequence acknowledgement.
 - Composition and virtual-frame publication run on a latest-job worker instead of the egui thread, so slow frames are replaced rather than queued.
+- An autonomous Rust `MediaClock` uses the shared absolute-deadline pacer and wakes egui with a coalesced latest-only tick; the window is no longer the stream timer.
 - `Frame::clone()` shares immutable pixels through copy-on-write storage; mutation detaches the buffer only when needed.
 - `PipelineMetrics` reports source-read, composition and sink-send durations plus received/dropped/error source-frame counts.
 - Scaling is selectable as `Fast` nearest-neighbor or `Smooth` bilinear without moving composition back onto the UI thread.
 - `FrameLimits` derives the default single-frame budget from physical memory and supports explicit per-call limits.
 - Errors expose stable codes, user-facing recovery text and chained diagnostic context.
-- Input mode, source ids, layout, scaling, fps, export path and virtual-output preference persist in a bounded, versioned, atomically replaced canonical JSON file with eframe migration fallback; camera handles and frame buffers never do.
-- Camera discovery runs on a dedicated worker, so opening Real mode or refreshing devices does not block egui.
+- Typed source descriptors, source order, layout, scaling, fps, export path and virtual-output preference persist in a bounded, versioned, atomically replaced canonical JSON file with eframe migration fallback; camera handles and frame buffers never do.
+- Camera discovery runs on a dedicated worker, so refreshing devices does not block egui.
 - A process-local camera lease serializes Stop -> Start for the same id without joining a potentially blocked capture call on egui.
 - The control panel is resizable and scrollable; source rows show composition order and real-camera health.
 - Selected sources can move earlier/later with keyboard-accessible controls; the first source is primary in the new PiP layout.
@@ -90,6 +93,12 @@ extension prototype.
   install/notarization, real third-party CMIO consumer and VoiceOver smoke need
   evidence from the same release candidate. See `docs/release-readiness.md`.
 
+## Three-Iteration Source Refactor
+
+1. Scene/preferences schema v4 replaced the global input mode and parallel id lists with ordered typed `SourceDescriptor` values. Sequential migration preserves old camera selections and remaps transform keys.
+2. Source selection, ordering, scenes, Undo/Redo and preview preparation now operate on one heterogeneous graph, so generated sources and physical cameras can occupy the same composition.
+3. Stream cadence moved from egui elapsed-time checks to an owned Rust `MediaClock` using `DeadlinePacer`; the production binary has one asynchronous render path, while `PipelineEngine` lives in a standalone SDK example.
+
 ## Run
 
 Launch the app:
@@ -123,6 +132,13 @@ List cameras:
 cargo run -- list-cameras
 ```
 
+Inspect the formats that the backend can actually open for one stable camera
+id (the probe opens the device briefly):
+
+```bash
+cargo run --example camera_formats -- 'uid:<value>'
+```
+
 Capture one real camera frame:
 
 ```bash
@@ -135,10 +151,10 @@ Render a synthetic demo frame:
 cargo run -- demo
 ```
 
-Render three pipeline frames:
+Render three frames through the standalone synchronous SDK example:
 
 ```bash
-cargo run -- pipeline-demo
+cargo run --example pipeline_demo
 ```
 
 Pipeline PPM files are named `frame-<sequence>-<timestamp>.ppm`; each has a

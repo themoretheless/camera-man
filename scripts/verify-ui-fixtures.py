@@ -78,6 +78,7 @@ def expected_fixtures():
         "workspace": (1120, 720),
         "setup": (920, 560),
         "empty": (920, 560),
+        "mixed": (1120, 720),
         "disconnected": (1120, 720),
         "install-error": (920, 560),
         "running": (1440, 900),

@@ -3,6 +3,7 @@ use crate::config::{VideoFormat, VirtualCameraConfig};
 use crate::diagnostics::{PipelineStage, stage_span};
 use crate::error::{CameraManError, CaptureErrorKind};
 use crate::frame::{CapturedFrame, Frame, FrameMetadata, PixelFormat};
+use crate::panic_boundary::panic_message;
 use crate::performance::{CopyStage, copy_ledger};
 use std::collections::HashSet;
 use std::panic::{self, AssertUnwindSafe};
@@ -335,7 +336,7 @@ fn run_capture_worker(
                     }
                 }
                 Err(panic_payload) => {
-                    let message = panic_message(&panic_payload);
+                    let message = panic_message(panic_payload);
                     *last_error.lock().expect("camera error mutex poisoned") = Some(
                         CameraManError::capture(format!("capture worker panicked: {message}")),
                     );
@@ -417,16 +418,6 @@ fn try_acquire_camera_lease(id: &str) -> Option<CameraLease> {
     active
         .insert(id.to_owned())
         .then(|| CameraLease { id: id.to_owned() })
-}
-
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(message) = payload.downcast_ref::<&str>() {
-        (*message).to_string()
-    } else if let Some(message) = payload.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        String::from("unknown panic payload")
-    }
 }
 
 impl FrameSource for ThreadedNokhwaFrameSource {

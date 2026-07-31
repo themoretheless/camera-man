@@ -29,6 +29,7 @@ pub mod media_contract;
 pub mod media_time;
 #[cfg(all(target_os = "macos", feature = "metal-interop-experiment"))]
 pub mod metal_interop;
+pub mod panic_boundary;
 pub mod parser_limits;
 pub mod performance;
 pub mod pipeline;
@@ -104,6 +105,7 @@ pub use media_time::{
 };
 #[cfg(all(target_os = "macos", feature = "metal-interop-experiment"))]
 pub use metal_interop::MetalPixelBufferBridge;
+pub use panic_boundary::{contain_panic, contain_panic_unit, panic_message, report_line};
 pub use parser_limits::{
     BENCHMARK_REPORT_PARSER_LIMITS, PREFERENCES_PARSER_LIMITS, PROFILE_PARSER_LIMITS,
     ParserLimitError, ParserLimits, SCENE_PARSER_LIMITS, read_bounded, validate_input_size,
@@ -145,7 +147,7 @@ pub use source_health::{
 pub use source_transform::{CropInsets, SourceFit, SourceTransform, TRANSFORM_SCALE};
 pub use stream_runtime::{
     DeadlinePacer, LifecycleError, PacingPlan, StartAction, StopAction, StreamLifecycle,
-    StreamState,
+    StreamState, begin_start_reaping_finished_worker, reset_after_contained_panic,
 };
 pub use system_extension::{EXTENSION_BUNDLE_ID, ExtensionActivationStatus, ExtensionInstaller};
 pub use transport::{

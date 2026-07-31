@@ -364,8 +364,8 @@ Exactly 700 numbered items: done work, improvements, problems, mistakes, design 
 352. Сделано: creation failure is logged instead of hidden panic.
 353. Проблема: extension FFI code is unsafe-heavy.
 354. Улучшение: isolate more unsafe blocks behind small wrappers.
-355. Проблема: ObjC callback panics can cross runtime boundary.
-356. Улучшение: wrap callback bodies in `catch_unwind`.
+355. Сделано: objc2 0.6.4 generates `extern "C-unwind"` methods, so callback panics unwound into CoreMediaIO instead of aborting; every callback body now runs inside `contain_panic`.
+356. Сделано: callback bodies are wrapped in `catch_unwind` behind `panic_boundary::contain_panic`, which logs the callback name and returns a conservative default (deny, empty collection, refused start) instead of unwinding; the fallback runs contained too and aborts rather than resuming the unwind, because no return value can be fabricated for the platform.
 357. Проблема: stream handle stores raw pointer-like value.
 358. Улучшение: replace with retained object managed safely across thread.
 359. Сделано: client authorization is enforced by a pure signing-identity policy consulted by connect and stream-start callbacks.
@@ -484,8 +484,8 @@ Exactly 700 numbered items: done work, improvements, problems, mistakes, design 
 472. Улучшение: add `--json` for tooling.
 473. Проблема: CLI output and README can drift.
 474. Улучшение: generate command docs from constants later.
-475. Проблема: no panic policy documented.
-476. Улучшение: document no panic across FFI boundaries.
+475. Сделано: the panic policy is documented in `docs/unsafe-invariants.md`: no unwind across the platform boundary, contain-log-degrade, and the per-callback defaults.
+476. Сделано: the no-panic-across-FFI rule is enforced, not only written down: `every_objc_callback_body_contains_its_panics` scans every source under `src/` (CoreMediaIO callbacks and the SystemExtensions delegate alike) and, with `panic_containment_requires_unwinding_profiles`, fails if a callback is left uncontained or a profile sets `panic = "abort"`.
 477. Проблема: no unsafe audit comments for every block.
 478. Улучшение: add focused safety comments in extension code.
 479. Проблема: too many manual Objective-C method signatures.

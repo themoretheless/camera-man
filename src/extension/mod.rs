@@ -13,8 +13,9 @@ use camera_man::{
     TransportFrameRef, VIRTUAL_CAMERA_DEFAULT_FPS, VIRTUAL_CAMERA_DEVICE_NAME,
     VIRTUAL_CAMERA_DEVICE_UID, VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS,
     VIRTUAL_CAMERA_MIN_FPS, VIRTUAL_CAMERA_STREAM_NAME, VIRTUAL_CAMERA_STREAM_UID,
-    VIRTUAL_CAMERA_WIDTH, authorize_client, copy_ledger, monotonic_time_nanos, record_drop,
-    record_output_frame, stage_span,
+    VIRTUAL_CAMERA_WIDTH, authorize_client, begin_start_reaping_finished_worker, contain_panic,
+    contain_panic_unit, copy_ledger, monotonic_time_nanos, panic_message, record_drop,
+    record_output_frame, report_line, reset_after_contained_panic, stage_span,
 };
 #[cfg(test)]
 use camera_man::{Frame, classify_frame_integrity};
@@ -186,6 +187,18 @@ fn stream_format() -> Option<Retained<CMIOExtensionStreamFormat>> {
     })
 }
 
+/// Clears the streaming flag when the worker ends, including when it ends by
+/// unwinding: a worker that is gone must never leave the stream claiming it is
+/// running. `start_streaming` joins the previous worker before storing `true`,
+/// so this trailing store can never land after a restart.
+struct StreamingExit(Arc<AtomicBool>);
+
+impl Drop for StreamingExit {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Polls the app transport and forwards samples at whatever cadence the
 /// app is actually producing (`TransportFrame.fps`), not a fixed
 /// constant: a 60fps-capable camera is no longer artificially capped at
@@ -193,13 +206,13 @@ fn stream_format() -> Option<Retained<CMIOExtensionStreamFormat>> {
 /// pipeline. Falls back to `VIRTUAL_CAMERA_DEFAULT_FPS` before the first
 /// real frame arrives, or if the app has not written one at all.
 fn stream_samples(handle: StreamHandle, streaming: Arc<AtomicBool>) {
+    let _exit_guard = StreamingExit(Arc::clone(&streaming));
+
     let Some(stream) = handle.retain() else {
-        streaming.store(false, Ordering::SeqCst);
         return;
     };
 
     let Some(pixel_pool) = OutputPixelBufferPool::new() else {
-        streaming.store(false, Ordering::SeqCst);
         return;
     };
     let mut sequence = 0_u64;
@@ -378,6 +391,19 @@ mod tests {
         let flags = cmio_discontinuity(FrameDiscontinuity::None, 0, true);
         assert!(flags.contains(CMIOExtensionStreamDiscontinuityFlags::Time));
         assert!(flags.contains(CMIOExtensionStreamDiscontinuityFlags::SampleDropped));
+    }
+
+    #[test]
+    fn worker_exit_guard_clears_the_streaming_flag_on_panic() {
+        let streaming = Arc::new(AtomicBool::new(true));
+        let worker_streaming = Arc::clone(&streaming);
+        let worker = thread::spawn(move || {
+            let _exit_guard = StreamingExit(worker_streaming);
+            panic!("worker exploded");
+        });
+
+        assert!(worker.join().is_err());
+        assert!(!streaming.load(Ordering::SeqCst));
     }
 
     #[test]

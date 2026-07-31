@@ -80,8 +80,11 @@ to a Rust CoreMediaIO system extension prototype.
   9,600 raw samples and no regressions. Rosetta baselines remain unchanged
   because this series did not execute an x86_64 process.
 - The default frame budget is 1/16 of physical RAM, clamped to 64 MiB–1 GiB; `CAMERAMAN_MAX_FRAME_BYTES` overrides it for controlled deployments.
-- Every CoreMediaIO unsafe block now has an enforced local invariant, but
-  callback panic containment still needs production hardening.
+- Every CoreMediaIO unsafe block has an enforced local invariant, and every
+  callback body runs inside `contain_panic`: a panic is logged and answered with
+  a conservative default (deny, empty list, refused start) instead of unwinding
+  into Objective-C. The defaults are unit-tested but have not been observed
+  against a real consumer after a signed install.
 - Client connect and stream-start callbacks enforce a signing-identity policy:
   clients without an establishable signing id are denied and every decision is
   logged. The deny path is unit-tested but has not been exercised against a

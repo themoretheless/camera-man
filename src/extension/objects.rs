@@ -3,6 +3,10 @@ use super::*;
 const PROVIDER_NAME: &str = "CameraMan";
 const MANUFACTURER: &str = "CameraMan Rust";
 const STREAM_ERROR_DOMAIN: &str = "com.cameraman.stream";
+const STREAM_ERROR_START_REJECTED: isize = 1;
+const STREAM_ERROR_STOP_REJECTED: isize = 2;
+const STREAM_ERROR_CLIENT_DENIED: isize = 3;
+const STREAM_ERROR_CALLBACK_PANICKED: isize = 4;
 
 pub(super) struct StreamSourceIvars {
     stream: AtomicPtr<CMIOExtensionStream>,
@@ -41,41 +45,57 @@ define_class!(
             client: &CMIOExtensionClient,
             out_error: *mut *mut NSError,
         ) -> bool {
-            let identity = client_identity(client);
-            match authorize_client(&identity) {
-                ClientAuthorization::Allow => {
-                    eprintln!("CameraMan: client connected ({})", identity.audit_line());
-                    true
-                }
-                ClientAuthorization::Deny(reason) => {
-                    eprintln!(
-                        "CameraMan: client connection denied, {reason} ({})",
-                        identity.audit_line()
-                    );
+            contain_panic(
+                "connectClient:error:",
+                || {
                     // SAFETY: CMIO provided `out_error` for this callback and
                     // permits either null or one writable NSError pointer.
-                    unsafe { write_stream_error(out_error, 3) };
+                    unsafe { write_stream_error(out_error, STREAM_ERROR_CALLBACK_PANICKED) };
                     false
-                }
-            }
+                },
+                || {
+                    let identity = client_identity(client);
+                    match authorize_client(&identity) {
+                        ClientAuthorization::Allow => {
+                            eprintln!("CameraMan: client connected ({})", identity.audit_line());
+                            true
+                        }
+                        ClientAuthorization::Deny(reason) => {
+                            eprintln!(
+                                "CameraMan: client connection denied, {reason} ({})",
+                                identity.audit_line()
+                            );
+                            // SAFETY: CMIO provided `out_error` for this callback
+                            // and permits either null or one writable NSError
+                            // pointer.
+                            unsafe { write_stream_error(out_error, STREAM_ERROR_CLIENT_DENIED) };
+                            false
+                        }
+                    }
+                },
+            )
         }
 
         #[unsafe(method(disconnectClient:))]
         fn disconnect_client(&self, client: &CMIOExtensionClient) {
-            let identity = client_identity(client);
-            eprintln!("CameraMan: client disconnected ({})", identity.audit_line());
+            contain_panic_unit("disconnectClient:", || {
+                let identity = client_identity(client);
+                eprintln!("CameraMan: client disconnected ({})", identity.audit_line());
+            });
         }
 
         #[unsafe(method_id(availableProperties))]
         fn available_properties(&self) -> Retained<NSSet<CMIOExtensionProperty>> {
-            // SAFETY: both framework property constants are valid non-null
-            // Objective-C objects and the slice length is exact.
-            unsafe {
-                NSSet::from_slice(&[
-                    CMIOExtensionPropertyProviderName,
-                    CMIOExtensionPropertyProviderManufacturer,
-                ])
-            }
+            contain_panic("ProviderSource availableProperties", NSSet::new, || {
+                // SAFETY: both framework property constants are valid non-null
+                // Objective-C objects and the slice length is exact.
+                unsafe {
+                    NSSet::from_slice(&[
+                        CMIOExtensionPropertyProviderName,
+                        CMIOExtensionPropertyProviderManufacturer,
+                    ])
+                }
+            })
         }
 
         #[unsafe(method_id(providerPropertiesForProperties:error:))]
@@ -84,25 +104,44 @@ define_class!(
             _properties: &NSSet<CMIOExtensionProperty>,
             _out_error: *mut *mut NSError,
         ) -> Retained<CMIOExtensionProviderProperties> {
-            // SAFETY: this is the framework-designated constructor for a
-            // provider-properties object.
-            let properties = unsafe { CMIOExtensionProviderProperties::new() };
-            // SAFETY: `properties` is initialized and both NSString values
-            // remain alive for each setter call.
-            unsafe {
-                properties.setName(Some(&NSString::from_str(PROVIDER_NAME)));
-                properties.setManufacturer(Some(&NSString::from_str(MANUFACTURER)));
-            }
-            properties
+            contain_panic(
+                "providerPropertiesForProperties:error:",
+                || {
+                    // SAFETY: this is the framework-designated constructor for a
+                    // provider-properties object.
+                    unsafe { CMIOExtensionProviderProperties::new() }
+                },
+                || {
+                    // SAFETY: this is the framework-designated constructor for a
+                    // provider-properties object.
+                    let properties = unsafe { CMIOExtensionProviderProperties::new() };
+                    // SAFETY: `properties` is initialized and both NSString values
+                    // remain alive for each setter call.
+                    unsafe {
+                        properties.setName(Some(&NSString::from_str(PROVIDER_NAME)));
+                        properties.setManufacturer(Some(&NSString::from_str(MANUFACTURER)));
+                    }
+                    properties
+                },
+            )
         }
 
         #[unsafe(method(setProviderProperties:error:))]
         fn set_provider_properties_error(
             &self,
             _provider_properties: &CMIOExtensionProviderProperties,
-            _out_error: *mut *mut NSError,
+            out_error: *mut *mut NSError,
         ) -> bool {
-            true
+            contain_panic(
+                "setProviderProperties:error:",
+                || {
+                    // SAFETY: CMIO provided `out_error` for this callback and
+                    // permits either null or one writable NSError pointer.
+                    unsafe { write_stream_error(out_error, STREAM_ERROR_CALLBACK_PANICKED) };
+                    false
+                },
+                || true,
+            )
         }
     }
 );
@@ -124,9 +163,11 @@ define_class!(
     unsafe impl CMIOExtensionDeviceSource for DeviceSource {
         #[unsafe(method_id(availableProperties))]
         fn available_properties(&self) -> Retained<NSSet<CMIOExtensionProperty>> {
-            // SAFETY: the framework property constant is a valid non-null
-            // Objective-C object and is retained by the returned set.
-            unsafe { NSSet::from_slice(&[CMIOExtensionPropertyDeviceModel]) }
+            contain_panic("DeviceSource availableProperties", NSSet::new, || {
+                // SAFETY: the framework property constant is a valid non-null
+                // Objective-C object and is retained by the returned set.
+                unsafe { NSSet::from_slice(&[CMIOExtensionPropertyDeviceModel]) }
+            })
         }
 
         #[unsafe(method_id(devicePropertiesForProperties:error:))]
@@ -135,25 +176,44 @@ define_class!(
             _properties: &NSSet<CMIOExtensionProperty>,
             _out_error: *mut *mut NSError,
         ) -> Retained<CMIOExtensionDeviceProperties> {
-            // SAFETY: this is the framework-designated constructor for a
-            // device-properties object.
-            let properties = unsafe { CMIOExtensionDeviceProperties::new() };
-            // SAFETY: `properties` is initialized and the temporary values
-            // remain alive through their setter calls.
-            unsafe {
-                properties.setModel(Some(&NSString::from_str(VIRTUAL_CAMERA_DEVICE_NAME)));
-                properties.setSuspended(Some(&NSNumber::new_bool(false)));
-            }
-            properties
+            contain_panic(
+                "devicePropertiesForProperties:error:",
+                || {
+                    // SAFETY: this is the framework-designated constructor for a
+                    // device-properties object.
+                    unsafe { CMIOExtensionDeviceProperties::new() }
+                },
+                || {
+                    // SAFETY: this is the framework-designated constructor for a
+                    // device-properties object.
+                    let properties = unsafe { CMIOExtensionDeviceProperties::new() };
+                    // SAFETY: `properties` is initialized and the temporary values
+                    // remain alive through their setter calls.
+                    unsafe {
+                        properties.setModel(Some(&NSString::from_str(VIRTUAL_CAMERA_DEVICE_NAME)));
+                        properties.setSuspended(Some(&NSNumber::new_bool(false)));
+                    }
+                    properties
+                },
+            )
         }
 
         #[unsafe(method(setDeviceProperties:error:))]
         fn set_device_properties_error(
             &self,
             _device_properties: &CMIOExtensionDeviceProperties,
-            _out_error: *mut *mut NSError,
+            out_error: *mut *mut NSError,
         ) -> bool {
-            true
+            contain_panic(
+                "setDeviceProperties:error:",
+                || {
+                    // SAFETY: CMIO provided `out_error` for this callback and
+                    // permits either null or one writable NSError pointer.
+                    unsafe { write_stream_error(out_error, STREAM_ERROR_CALLBACK_PANICKED) };
+                    false
+                },
+                || true,
+            )
         }
     }
 );
@@ -176,17 +236,19 @@ define_class!(
     unsafe impl CMIOExtensionStreamSource for StreamSource {
         #[unsafe(method_id(formats))]
         fn formats(&self) -> Retained<NSArray<CMIOExtensionStreamFormat>> {
-            match stream_format() {
+            contain_panic("formats", NSArray::new, || match stream_format() {
                 Some(format) => NSArray::from_slice(&[&*format]),
                 None => NSArray::new(),
-            }
+            })
         }
 
         #[unsafe(method_id(availableProperties))]
         fn available_properties(&self) -> Retained<NSSet<CMIOExtensionProperty>> {
-            // SAFETY: the framework property constant is a valid non-null
-            // Objective-C object and is retained by the returned set.
-            unsafe { NSSet::from_slice(&[CMIOExtensionPropertyStreamActiveFormatIndex]) }
+            contain_panic("StreamSource availableProperties", NSSet::new, || {
+                // SAFETY: the framework property constant is a valid non-null
+                // Objective-C object and is retained by the returned set.
+                unsafe { NSSet::from_slice(&[CMIOExtensionPropertyStreamActiveFormatIndex]) }
+            })
         }
 
         #[unsafe(method_id(streamPropertiesForProperties:error:))]
@@ -195,75 +257,126 @@ define_class!(
             _properties: &NSSet<CMIOExtensionProperty>,
             _out_error: *mut *mut NSError,
         ) -> Retained<CMIOExtensionStreamProperties> {
-            // SAFETY: this is the framework-designated constructor for a
-            // stream-properties object.
-            let properties = unsafe { CMIOExtensionStreamProperties::new() };
-            // SAFETY: `properties` is initialized and the NSNumber remains
-            // alive through the setter call.
-            unsafe {
-                properties.setActiveFormatIndex(Some(&NSNumber::new_u8(0)));
-            }
-            properties
+            contain_panic(
+                "streamPropertiesForProperties:error:",
+                || {
+                    // SAFETY: this is the framework-designated constructor for a
+                    // stream-properties object.
+                    unsafe { CMIOExtensionStreamProperties::new() }
+                },
+                || {
+                    // SAFETY: this is the framework-designated constructor for a
+                    // stream-properties object.
+                    let properties = unsafe { CMIOExtensionStreamProperties::new() };
+                    // SAFETY: `properties` is initialized and the NSNumber remains
+                    // alive through the setter call.
+                    unsafe {
+                        properties.setActiveFormatIndex(Some(&NSNumber::new_u8(0)));
+                    }
+                    properties
+                },
+            )
         }
 
         #[unsafe(method(setStreamProperties:error:))]
         fn set_stream_properties_error(
             &self,
             _stream_properties: &CMIOExtensionStreamProperties,
-            _out_error: *mut *mut NSError,
+            out_error: *mut *mut NSError,
         ) -> bool {
-            true
+            contain_panic(
+                "setStreamProperties:error:",
+                || {
+                    // SAFETY: CMIO provided `out_error` for this callback and
+                    // permits either null or one writable NSError pointer.
+                    unsafe { write_stream_error(out_error, STREAM_ERROR_CALLBACK_PANICKED) };
+                    false
+                },
+                || true,
+            )
         }
 
         #[unsafe(method(authorizedToStartStreamForClient:))]
         fn authorized_to_start_stream_for_client(&self, client: &CMIOExtensionClient) -> bool {
-            let identity = client_identity(client);
-            match authorize_client(&identity) {
-                ClientAuthorization::Allow => {
-                    eprintln!(
-                        "CameraMan: stream start authorized ({})",
-                        identity.audit_line()
-                    );
-                    true
-                }
-                ClientAuthorization::Deny(reason) => {
-                    eprintln!(
-                        "CameraMan: stream start denied, {reason} ({})",
-                        identity.audit_line()
-                    );
-                    false
-                }
-            }
+            contain_panic(
+                "authorizedToStartStreamForClient:",
+                || false,
+                || {
+                    let identity = client_identity(client);
+                    match authorize_client(&identity) {
+                        ClientAuthorization::Allow => {
+                            eprintln!(
+                                "CameraMan: stream start authorized ({})",
+                                identity.audit_line()
+                            );
+                            true
+                        }
+                        ClientAuthorization::Deny(reason) => {
+                            eprintln!(
+                                "CameraMan: stream start denied, {reason} ({})",
+                                identity.audit_line()
+                            );
+                            false
+                        }
+                    }
+                },
+            )
         }
 
         #[unsafe(method(startStreamAndReturnError:))]
         fn start_stream_and_return_error(&self, out_error: *mut *mut NSError) -> bool {
-            eprintln!("CameraMan virtual stream start requested.");
-            match self.start_streaming() {
-                Ok(()) => true,
-                Err(error) => {
-                    eprintln!("CameraMan virtual stream start rejected: {error}");
+            contain_panic(
+                "startStreamAndReturnError:",
+                || {
+                    self.repair_after_panic();
                     // SAFETY: CMIO provided `out_error` for this callback and
                     // permits either null or one writable NSError pointer.
-                    unsafe { write_stream_error(out_error, 1) };
+                    unsafe { write_stream_error(out_error, STREAM_ERROR_CALLBACK_PANICKED) };
                     false
-                }
-            }
+                },
+                || {
+                    eprintln!("CameraMan virtual stream start requested.");
+                    match self.start_streaming() {
+                        Ok(()) => true,
+                        Err(error) => {
+                            eprintln!("CameraMan virtual stream start rejected: {error}");
+                            // SAFETY: CMIO provided `out_error` for this callback
+                            // and permits either null or one writable NSError
+                            // pointer.
+                            unsafe { write_stream_error(out_error, STREAM_ERROR_START_REJECTED) };
+                            false
+                        }
+                    }
+                },
+            )
         }
 
         #[unsafe(method(stopStreamAndReturnError:))]
         fn stop_stream_and_return_error(&self, out_error: *mut *mut NSError) -> bool {
-            eprintln!("CameraMan virtual stream stop requested.");
-            match self.stop_streaming() {
-                Ok(()) => true,
-                Err(error) => {
-                    eprintln!("CameraMan virtual stream stop rejected: {error}");
+            contain_panic(
+                "stopStreamAndReturnError:",
+                || {
+                    self.repair_after_panic();
                     // SAFETY: CMIO provided `out_error` for this callback and
                     // permits either null or one writable NSError pointer.
-                    unsafe { write_stream_error(out_error, 2) };
+                    unsafe { write_stream_error(out_error, STREAM_ERROR_CALLBACK_PANICKED) };
                     false
-                }
-            }
+                },
+                || {
+                    eprintln!("CameraMan virtual stream stop requested.");
+                    match self.stop_streaming() {
+                        Ok(()) => true,
+                        Err(error) => {
+                            eprintln!("CameraMan virtual stream stop rejected: {error}");
+                            // SAFETY: CMIO provided `out_error` for this callback
+                            // and permits either null or one writable NSError
+                            // pointer.
+                            unsafe { write_stream_error(out_error, STREAM_ERROR_STOP_REJECTED) };
+                            false
+                        }
+                    }
+                },
+            )
         }
     }
 );
@@ -297,7 +410,17 @@ impl StreamSource {
             .lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if lifecycle.begin_start()? == StartAction::AlreadyRunning {
+        let (action, reaped) = begin_start_reaping_finished_worker(
+            &mut lifecycle,
+            &self.ivars().streaming,
+            self.reap_finished_worker(),
+        )?;
+        if let Some(interrupted) = reaped {
+            eprintln!(
+                "CameraMan stream worker ended while {interrupted:?}; stream reset for restart."
+            );
+        }
+        if action == StartAction::AlreadyRunning {
             return Ok(());
         }
 
@@ -312,7 +435,7 @@ impl StreamSource {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
         if let Some(previous) = previous {
-            let _ = previous.join();
+            Self::join_worker(previous);
         }
 
         let raw_stream = self.ivars().stream.load(Ordering::SeqCst);
@@ -357,13 +480,60 @@ impl StreamSource {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
         if let Some(worker) = worker {
-            let _ = worker.join();
+            Self::join_worker(worker);
         }
         self.ivars()
             .lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .finish_stop()
+    }
+
+    /// Joins one worker and reports a panic that the thread boundary contained.
+    fn join_worker(worker: thread::JoinHandle<()>) {
+        if let Err(payload) = worker.join() {
+            eprintln!(
+                "CameraMan stream worker thread panicked: {}",
+                panic_message(payload)
+            );
+        }
+    }
+
+    /// Joins a worker that ended on its own: a panic contained at the thread
+    /// boundary, or an early return when the stream retain or the pixel pool
+    /// failed. The caller hands the answer to
+    /// `begin_start_reaping_finished_worker`, which owns the state repair.
+    fn reap_finished_worker(&self) -> bool {
+        let finished = self
+            .ivars()
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take_if(|worker| worker.is_finished());
+        match finished {
+            Some(worker) => {
+                Self::join_worker(worker);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Runs on the uncontained fallback path of the start and stop callbacks,
+    /// so nothing here may panic: `report_line` replaces `eprintln!`, which
+    /// panics when stderr is gone.
+    fn repair_after_panic(&self) {
+        let interrupted = reset_after_contained_panic(
+            &mut self
+                .ivars()
+                .lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            &self.ivars().streaming,
+        );
+        report_line(&format!(
+            "CameraMan stream state reset from {interrupted:?} after a contained panic."
+        ));
     }
 }
 

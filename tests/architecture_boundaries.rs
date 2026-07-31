@@ -129,6 +129,52 @@ fn requirement_gated_network_stack_is_not_in_the_local_build() {
     }
 }
 
+#[test]
+fn every_objc_callback_body_contains_its_panics() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources = Vec::new();
+    collect_rust_sources(&root.join("src"), root, &mut sources);
+    let mut implemented = 0;
+    for relative_path in sources {
+        let source = fs::read_to_string(root.join(&relative_path)).unwrap();
+        for block in source.split("#[unsafe(method").skip(1) {
+            let body_start = block.find('{');
+            // An `extern_methods!` entry only declares the selector, so its
+            // signature ends in a semicolon before any body brace opens.
+            let is_declaration = block
+                .find(';')
+                .is_some_and(|semicolon| body_start.is_none_or(|brace| semicolon < brace));
+            if is_declaration {
+                continue;
+            }
+            implemented += 1;
+            assert!(
+                block.contains("contain_panic"),
+                "a callback body in {relative_path} can unwind into Objective-C: {}",
+                block.lines().take(2).collect::<Vec<_>>().join(" ")
+            );
+        }
+    }
+    assert_eq!(
+        implemented, 19,
+        "the Objective-C callback set changed; contain the new callback and update this count"
+    );
+}
+
+#[test]
+fn panic_containment_requires_unwinding_profiles() {
+    let manifest =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+    assert!(
+        !manifest.lines().any(|line| {
+            line.trim_start()
+                .strip_prefix("panic")
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        }),
+        "`catch_unwind` is inert under panic = \"abort\", so callback containment would become a process abort"
+    );
+}
+
 fn collect_rust_sources(directory: &Path, root: &Path, sources: &mut Vec<String>) {
     for entry in fs::read_dir(directory).unwrap() {
         let path = entry.unwrap().path();

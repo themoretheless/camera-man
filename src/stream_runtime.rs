@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PacingPlan {
     pub sleep_nanos: u64,
@@ -208,6 +210,55 @@ impl StreamLifecycle {
         self.state = StreamState::Ready;
         Ok(())
     }
+
+    /// Forces a definite state after a contained panic or a worker that ended
+    /// on its own, and reports the state it interrupted. Unlike `recover`,
+    /// every state is accepted: a panic can stop a transition halfway, and
+    /// neither `begin_start` nor `begin_stop` can leave `Starting` or
+    /// `Stopping` again. `Detached` is preserved because no stream is attached
+    /// yet.
+    pub fn force_ready(&mut self) -> StreamState {
+        let interrupted = self.state;
+        if interrupted != StreamState::Detached {
+            self.state = StreamState::Ready;
+        }
+        interrupted
+    }
+}
+
+/// Decides what a start callback must do, reaping a worker that ended without
+/// a stop first.
+///
+/// The two halves of "the stream is running" are the lifecycle state and the
+/// worker's run flag, and a worker that ended on its own (a contained panic, or
+/// an early return when the stream retain or the pixel pool failed) leaves them
+/// disagreeing: the lifecycle still says `Running`. The reap has to happen
+/// before `begin_start`, which would otherwise answer `AlreadyRunning` for a
+/// worker that is gone and wedge the stream until the client stops it. Both
+/// steps live here so the order cannot be inverted at the call site. Returns
+/// the state the dead worker left behind alongside the action.
+pub fn begin_start_reaping_finished_worker(
+    lifecycle: &mut StreamLifecycle,
+    streaming: &AtomicBool,
+    worker_finished: bool,
+) -> Result<(StartAction, Option<StreamState>), LifecycleError> {
+    let reaped = worker_finished.then(|| {
+        streaming.store(false, Ordering::SeqCst);
+        lifecycle.force_ready()
+    });
+    lifecycle.begin_start().map(|action| (action, reaped))
+}
+
+/// Restores a definite state after a panic contained inside a start or stop
+/// callback: the worker is told to exit (the next start joins it) and the
+/// half-finished transition the panic interrupted is reopened, which no
+/// ordinary transition can leave. Returns the interrupted state.
+pub fn reset_after_contained_panic(
+    lifecycle: &mut StreamLifecycle,
+    streaming: &AtomicBool,
+) -> StreamState {
+    streaming.store(false, Ordering::SeqCst);
+    lifecycle.force_ready()
 }
 
 #[cfg(test)]
@@ -297,5 +348,131 @@ mod tests {
         let mut lifecycle = StreamLifecycle::default();
         let error = lifecycle.begin_start().unwrap_err();
         assert_eq!(error.state, StreamState::Detached);
+    }
+
+    /// The state field is private, so every fixture reaches its state through
+    /// the same transitions a real stream would take.
+    fn lifecycle_in(state: StreamState) -> StreamLifecycle {
+        let mut lifecycle = StreamLifecycle::default();
+        if state == StreamState::Detached {
+            return lifecycle;
+        }
+        lifecycle.attach().unwrap();
+        match state {
+            StreamState::Ready => {}
+            StreamState::Starting => {
+                lifecycle.begin_start().unwrap();
+            }
+            StreamState::Faulted => {
+                lifecycle.begin_start().unwrap();
+                lifecycle.finish_start(false).unwrap();
+            }
+            StreamState::Running => {
+                lifecycle.begin_start().unwrap();
+                lifecycle.finish_start(true).unwrap();
+            }
+            StreamState::Stopping => {
+                lifecycle.begin_start().unwrap();
+                lifecycle.finish_start(true).unwrap();
+                lifecycle.begin_stop().unwrap();
+            }
+            StreamState::Detached => unreachable!("handled before attaching"),
+        }
+        assert_eq!(lifecycle.state(), state);
+        lifecycle
+    }
+
+    #[test]
+    fn force_ready_reopens_every_half_finished_transition() {
+        for state in [
+            StreamState::Ready,
+            StreamState::Starting,
+            StreamState::Running,
+            StreamState::Stopping,
+            StreamState::Faulted,
+        ] {
+            let mut lifecycle = lifecycle_in(state);
+            assert_eq!(lifecycle.force_ready(), state);
+            assert_eq!(lifecycle.state(), StreamState::Ready);
+            assert_eq!(lifecycle.begin_start().unwrap(), StartAction::StartWorker);
+        }
+    }
+
+    #[test]
+    fn force_ready_does_not_invent_an_attached_stream() {
+        let mut lifecycle = lifecycle_in(StreamState::Detached);
+        assert_eq!(lifecycle.force_ready(), StreamState::Detached);
+        assert_eq!(lifecycle.state(), StreamState::Detached);
+        assert!(lifecycle.begin_start().is_err());
+    }
+
+    #[test]
+    fn a_start_interrupted_before_finish_start_wedges_the_stream_until_repair() {
+        let mut lifecycle = lifecycle_in(StreamState::Starting);
+        assert_eq!(
+            lifecycle.begin_start().unwrap(),
+            StartAction::AlreadyRunning
+        );
+        assert!(lifecycle.begin_stop().is_err());
+
+        lifecycle.force_ready();
+        assert_eq!(lifecycle.begin_start().unwrap(), StartAction::StartWorker);
+        lifecycle.finish_start(true).unwrap();
+        assert_eq!(lifecycle.begin_stop().unwrap(), StopAction::StopWorker);
+        lifecycle.finish_stop().unwrap();
+    }
+
+    #[test]
+    fn a_worker_that_ended_on_its_own_does_not_make_the_next_start_a_no_op() {
+        let mut lifecycle = lifecycle_in(StreamState::Running);
+        let streaming = AtomicBool::new(true);
+
+        let (action, reaped) =
+            begin_start_reaping_finished_worker(&mut lifecycle, &streaming, true).unwrap();
+
+        assert_eq!(action, StartAction::StartWorker);
+        assert_eq!(reaped, Some(StreamState::Running));
+        assert!(!streaming.load(Ordering::SeqCst));
+        lifecycle.finish_start(true).unwrap();
+    }
+
+    #[test]
+    fn a_live_worker_is_not_reaped_and_the_start_stays_idempotent() {
+        let mut lifecycle = lifecycle_in(StreamState::Running);
+        let streaming = AtomicBool::new(true);
+
+        let (action, reaped) =
+            begin_start_reaping_finished_worker(&mut lifecycle, &streaming, false).unwrap();
+
+        assert_eq!(action, StartAction::AlreadyRunning);
+        assert_eq!(reaped, None);
+        assert!(streaming.load(Ordering::SeqCst));
+        assert_eq!(lifecycle.state(), StreamState::Running);
+    }
+
+    #[test]
+    fn reaping_a_worker_that_never_started_leaves_the_detached_error_intact() {
+        let mut lifecycle = lifecycle_in(StreamState::Detached);
+        let streaming = AtomicBool::new(false);
+
+        let error =
+            begin_start_reaping_finished_worker(&mut lifecycle, &streaming, true).unwrap_err();
+
+        assert_eq!(error.state, StreamState::Detached);
+    }
+
+    #[test]
+    fn a_contained_panic_reset_clears_the_flag_and_reopens_the_transition() {
+        for state in [StreamState::Starting, StreamState::Stopping] {
+            let mut lifecycle = lifecycle_in(state);
+            let streaming = AtomicBool::new(true);
+
+            assert_eq!(
+                reset_after_contained_panic(&mut lifecycle, &streaming),
+                state
+            );
+            assert!(!streaming.load(Ordering::SeqCst));
+            assert_eq!(lifecycle.begin_start().unwrap(), StartAction::StartWorker);
+        }
     }
 }

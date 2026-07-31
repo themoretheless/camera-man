@@ -153,6 +153,7 @@ mod tests {
 #[cfg(target_os = "macos")]
 mod macos {
     use super::{EXTENSION_BUNDLE_ID, ExtensionActivationStatus};
+    use crate::panic_boundary::{contain_panic, contain_panic_unit};
     use std::sync::{Arc, Mutex};
 
     use objc2::rc::Retained;
@@ -224,14 +225,23 @@ mod macos {
                 _existing: &OSSystemExtensionProperties,
                 _ext: &OSSystemExtensionProperties,
             ) -> OSSystemExtensionReplacementAction {
-                // Only our own extension is ever requested here, so replacing
-                // an older installed copy with this one is always desired.
-                OSSystemExtensionReplacementAction::Replace
+                contain_panic(
+                    "request:actionForReplacingExtension:withExtension:",
+                    || OSSystemExtensionReplacementAction::Cancel,
+                    || {
+                        // Only our own extension is ever requested here, so
+                        // replacing an older installed copy with this one is
+                        // always desired.
+                        OSSystemExtensionReplacementAction::Replace
+                    },
+                )
             }
 
             #[unsafe(method(requestNeedsUserApproval:))]
             fn request_needs_user_approval(&self, _request: &OSSystemExtensionRequest) {
-                self.set_status(ExtensionActivationStatus::NeedsApproval);
+                contain_panic_unit("requestNeedsUserApproval:", || {
+                    self.set_status(ExtensionActivationStatus::NeedsApproval);
+                });
             }
 
             #[unsafe(method(request:didFinishWithResult:))]
@@ -240,12 +250,15 @@ mod macos {
                 _request: &OSSystemExtensionRequest,
                 result: OSSystemExtensionRequestResult,
             ) {
-                let status = if result == OSSystemExtensionRequestResult::WillCompleteAfterReboot {
-                    ExtensionActivationStatus::WillCompleteAfterReboot
-                } else {
-                    ExtensionActivationStatus::Activated
-                };
-                self.set_status(status);
+                contain_panic_unit("request:didFinishWithResult:", || {
+                    let status =
+                        if result == OSSystemExtensionRequestResult::WillCompleteAfterReboot {
+                            ExtensionActivationStatus::WillCompleteAfterReboot
+                        } else {
+                            ExtensionActivationStatus::Activated
+                        };
+                    self.set_status(status);
+                });
             }
 
             #[unsafe(method(request:didFailWithError:))]
@@ -254,8 +267,23 @@ mod macos {
                 _request: &OSSystemExtensionRequest,
                 error: &NSError,
             ) {
-                let message = error.localizedDescription().to_string();
-                self.set_status(ExtensionActivationStatus::Failed(message));
+                contain_panic(
+                    "request:didFailWithError:",
+                    || {
+                        // The request failed either way, and this is the last
+                        // callback for it: leaving the status at Requesting
+                        // would spin the UI forever.
+                        self.set_status(ExtensionActivationStatus::Failed(String::from(
+                            "activation failed and macOS did not describe why",
+                        )));
+                    },
+                    || {
+                        // `localizedDescription` is declared non-null, so objc2
+                        // panics rather than returning if it is nil.
+                        let message = error.localizedDescription().to_string();
+                        self.set_status(ExtensionActivationStatus::Failed(message));
+                    },
+                );
             }
         }
     );

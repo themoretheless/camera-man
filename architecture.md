@@ -56,7 +56,7 @@ What is still development-only:
 - The fixed eight-hour 1080p30/four-source acceptance profile passes short
   correctness/latency smoke runs; RSS qualification and the complete duration
   still need a release run on the recorded target hardware.
-- The extension still has unsafe CoreMediaIO/Objective-C boundaries that need hardening.
+- The extension's CoreMediaIO/Objective-C callbacks are panic-contained and every unsafe block has an enforced invariant, but the containment defaults have only been exercised in unit tests, not against a real signed CMIO host.
 
 ## Module Map
 
@@ -506,6 +506,8 @@ Keep one source of truth for:
 - app/extension plist shape: typed builders in `main.rs`, serialized only by
   the `plist` crate.
 - persisted app settings: `AppPreferences` and its versioned storage key.
+- panic behaviour at platform callbacks: `panic_boundary::contain_panic` and the
+  policy in `docs/unsafe-invariants.md`.
 
 Avoid duplicating:
 
@@ -727,6 +729,15 @@ Reviewed and fixed:
   signing-identity policy: identified clients are allowed, clients with no
   establishable signing identity are denied, and every decision is logged
   with signing id and pid.
+- Every Objective-C callback body used to be able to unwind into the framework
+  that called it, the CoreMediaIO callbacks and the SystemExtensions activation
+  delegate alike: objc2 defines them as `extern "C-unwind"`, so nothing aborted
+  at the boundary. Each body now runs inside `contain_panic`, which logs the
+  callback name and returns a conservative default. The fallback runs contained
+  too and aborts rather than resuming the unwind, since no return value can be
+  fabricated for the platform. Start and stop additionally repair the lifecycle
+  so a contained panic cannot strand the stream in `Starting` or `Stopping`,
+  where start spawned nothing and stop refused outright.
 
 Still open:
 
@@ -736,7 +747,9 @@ Still open:
 - The reader now borrows the mapped slot directly into the pooled
   `CVPixelBuffer`; one mmap publish copy and one Core Video upload remain, and
   IOSurface is accepted only if measurement removes one without regressions.
-- CoreMediaIO unsafe callbacks need panic containment.
+- Panic containment defaults (denied client, empty format list, empty
+  properties) are unit-tested but have not been observed in a real consumer
+  after a signed install.
 
 ## Review Notes
 

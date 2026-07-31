@@ -7,13 +7,14 @@ use std::thread;
 use std::time::Duration;
 
 use camera_man::{
-    CopyStage, DeadlinePacer, DropReason, FrameDiscontinuity, FrameIntegrityState,
-    FrameObservation, FrameTransportReader, FrameView, IntegrityDropReason, LifecycleError,
-    PipelineStage, PixelFormat, StartAction, StopAction, StreamLifecycle, TransportFrameRef,
-    VIRTUAL_CAMERA_DEFAULT_FPS, VIRTUAL_CAMERA_DEVICE_NAME, VIRTUAL_CAMERA_DEVICE_UID,
-    VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS, VIRTUAL_CAMERA_MIN_FPS,
-    VIRTUAL_CAMERA_STREAM_NAME, VIRTUAL_CAMERA_STREAM_UID, VIRTUAL_CAMERA_WIDTH, copy_ledger,
-    monotonic_time_nanos, record_drop, record_output_frame, stage_span,
+    ClientAuthorization, ClientIdentity, CopyStage, DeadlinePacer, DropReason, FrameDiscontinuity,
+    FrameIntegrityState, FrameObservation, FrameTransportReader, FrameView, IntegrityDropReason,
+    LifecycleError, PipelineStage, PixelFormat, StartAction, StopAction, StreamLifecycle,
+    TransportFrameRef, VIRTUAL_CAMERA_DEFAULT_FPS, VIRTUAL_CAMERA_DEVICE_NAME,
+    VIRTUAL_CAMERA_DEVICE_UID, VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS,
+    VIRTUAL_CAMERA_MIN_FPS, VIRTUAL_CAMERA_STREAM_NAME, VIRTUAL_CAMERA_STREAM_UID,
+    VIRTUAL_CAMERA_WIDTH, authorize_client, copy_ledger, monotonic_time_nanos, record_drop,
+    record_output_frame, stage_span,
 };
 #[cfg(test)]
 use camera_man::{Frame, classify_frame_integrity};

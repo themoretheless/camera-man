@@ -8,7 +8,7 @@ test, model, or platform contract that can falsify the wider assumption.
 |---|---|---|
 | `src/diagnostics.rs` | macOS signpost and scalar process counters | `diagnostics::tests`, strict Clippy, macOS CI |
 | `src/extension/mod.rs` | retained CMIO objects and sample submission | `cameraman-extension` unit tests plus signed real-consumer release gate |
-| `src/extension/objects.rs` | objc2 protocol implementations and NSError out pointer | `StreamLifecycle` tests plus Apple CMIO delegate contract and signed release gate |
+| `src/extension/objects.rs` | objc2 protocol implementations, client identity reads and NSError out pointer | `StreamLifecycle` and `client_authorization` tests plus Apple CMIO delegate contract and signed release gate |
 | `src/extension/pixel_buffer.rs` | Core Video ownership, locks, row pointers | extension pixel-writer tests plus Apple CVPixelBuffer lock/base-address contract |
 | `src/extension/timing.rs` | Core Media time constants | extension timing/range tests plus Apple CMTime contract |
 | `src/frame.rs` | `sysctl` physical-memory query | frame limit tests plus macOS `sysctlbyname` contract |

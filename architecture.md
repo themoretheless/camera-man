@@ -723,6 +723,10 @@ Reviewed and fixed:
   `systemextensionsctl list` even when the bundle is incomplete.
 - Team IDs from app/extension signatures and the app profile are reported;
   certificate/profile mismatch stops installable bundling early.
+- Client connect and stream-start callbacks now consult one pure
+  signing-identity policy: identified clients are allowed, clients with no
+  establishable signing identity are denied, and every decision is logged
+  with signing id and pid.
 
 Still open:
 
@@ -733,7 +737,6 @@ Still open:
   `CVPixelBuffer`; one mmap publish copy and one Core Video upload remain, and
   IOSurface is accepted only if measurement removes one without regressions.
 - CoreMediaIO unsafe callbacks need panic containment.
-- Client authorization is logged but not enforced.
 
 ## Review Notes
 

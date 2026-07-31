@@ -368,8 +368,8 @@ Exactly 700 numbered items: done work, improvements, problems, mistakes, design 
 356. Улучшение: wrap callback bodies in `catch_unwind`.
 357. Проблема: stream handle stores raw pointer-like value.
 358. Улучшение: replace with retained object managed safely across thread.
-359. Проблема: client authorization is not enforced.
-360. Улучшение: verify client signing identity or bundle id if API allows.
+359. Сделано: client authorization is enforced by a pure signing-identity policy consulted by connect and stream-start callbacks.
+360. Сделано: CMIO signingID and pid are read; clients without an establishable signing identity are denied and every decision is logged.
 361. Сделано: client id logging exists.
 362. Проблема: client id is not security identity.
 363. Улучшение: document that logging is not authorization.

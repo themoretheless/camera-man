@@ -39,26 +39,31 @@ define_class!(
         fn connect_client_error(
             &self,
             client: &CMIOExtensionClient,
-            _out_error: *mut *mut NSError,
+            out_error: *mut *mut NSError,
         ) -> bool {
-            // The bindings this crate uses only expose an opaque per-connection
-            // clientID (a UUID minted by CMIO), not the caller's code-signing
-            // identity, so this cannot actually verify who is connecting; it
-            // only makes connections visible in logs. Any local process can
-            // still attach. See recommendation.md item 359.
-            // SAFETY: CMIO supplies a live client object for the entire
-            // callback and `clientID` returns an autoreleased value.
-            let client_id = unsafe { client.clientID() };
-            eprintln!("CameraMan: client connected ({client_id})");
-            true
+            let identity = client_identity(client);
+            match authorize_client(&identity) {
+                ClientAuthorization::Allow => {
+                    eprintln!("CameraMan: client connected ({})", identity.audit_line());
+                    true
+                }
+                ClientAuthorization::Deny(reason) => {
+                    eprintln!(
+                        "CameraMan: client connection denied, {reason} ({})",
+                        identity.audit_line()
+                    );
+                    // SAFETY: CMIO provided `out_error` for this callback and
+                    // permits either null or one writable NSError pointer.
+                    unsafe { write_stream_error(out_error, 3) };
+                    false
+                }
+            }
         }
 
         #[unsafe(method(disconnectClient:))]
         fn disconnect_client(&self, client: &CMIOExtensionClient) {
-            // SAFETY: CMIO keeps the callback's client object alive while its
-            // identifier is queried.
-            let client_id = unsafe { client.clientID() };
-            eprintln!("CameraMan: client disconnected ({client_id})");
+            let identity = client_identity(client);
+            eprintln!("CameraMan: client disconnected ({})", identity.audit_line());
         }
 
         #[unsafe(method_id(availableProperties))]
@@ -212,17 +217,23 @@ define_class!(
 
         #[unsafe(method(authorizedToStartStreamForClient:))]
         fn authorized_to_start_stream_for_client(&self, client: &CMIOExtensionClient) -> bool {
-            // See the comment on connect_client_error: this only logs, it
-            // does not actually verify the caller. Any local process can
-            // start the stream. See recommendation.md item 359.
-            // SAFETY: CMIO keeps the callback's client object alive while its
-            // identifier is queried.
-            let client_id = unsafe { client.clientID() };
-            eprintln!(
-                "CameraMan: stream start authorized for client ({})",
-                client_id
-            );
-            true
+            let identity = client_identity(client);
+            match authorize_client(&identity) {
+                ClientAuthorization::Allow => {
+                    eprintln!(
+                        "CameraMan: stream start authorized ({})",
+                        identity.audit_line()
+                    );
+                    true
+                }
+                ClientAuthorization::Deny(reason) => {
+                    eprintln!(
+                        "CameraMan: stream start denied, {reason} ({})",
+                        identity.audit_line()
+                    );
+                    false
+                }
+            }
         }
 
         #[unsafe(method(startStreamAndReturnError:))]
@@ -353,6 +364,21 @@ impl StreamSource {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .finish_stop()
+    }
+}
+
+/// Snapshots everything CMIO can report about a client so the pure policy in
+/// `camera_man::client_authorization` decides without touching Objective-C.
+fn client_identity(client: &CMIOExtensionClient) -> ClientIdentity {
+    // SAFETY: CMIO supplies a live client object for the entire callback;
+    // `clientID` and `signingID` return autoreleased objects and `pid` is a
+    // plain scalar read.
+    let (client_id, signing_id, pid) =
+        unsafe { (client.clientID(), client.signingID(), client.pid()) };
+    ClientIdentity {
+        client_id: client_id.to_string(),
+        signing_id: signing_id.map(|value| value.to_string()),
+        pid: (pid > 0).then_some(pid),
     }
 }
 

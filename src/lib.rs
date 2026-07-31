@@ -13,6 +13,7 @@ pub mod benchmarking;
 pub mod camera;
 #[cfg(feature = "camera-capture")]
 pub mod capture;
+pub mod client_authorization;
 pub mod config;
 pub mod diagnostics;
 pub mod error;
@@ -52,6 +53,9 @@ pub use camera::{CameraDevice, CameraDiscovery, FrameSource, SyntheticFrameSourc
 #[cfg(feature = "camera-capture")]
 pub use capture::{
     NokhwaCameraDiscovery, NokhwaFrameSource, ThreadedNokhwaFrameSource, capture_one_with_timeout,
+};
+pub use client_authorization::{
+    ClientAuthorization, ClientDenialReason, ClientIdentity, authorize_client,
 };
 pub use config::{
     VIRTUAL_CAMERA_DEFAULT_FPS, VIRTUAL_CAMERA_DEVICE_NAME, VIRTUAL_CAMERA_DEVICE_UID,

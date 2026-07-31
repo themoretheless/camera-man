@@ -12,6 +12,10 @@ pub(super) fn run_check() {
         "config.max_frame_bytes={}",
         default_frame_limits().max_frame_bytes()
     );
+    println!(
+        "config.camera_open_timeout_ms={}",
+        camera_open_timeout().as_millis()
+    );
 }
 
 pub(super) fn is_help_flag(argument: &str) -> bool {

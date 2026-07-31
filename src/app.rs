@@ -14,13 +14,14 @@ use crate::{
 };
 use camera_man::FrameSource;
 use camera_man::{
-    CameraDevice, CapturedFrame, CompositionLayout, ConsumerProgress, EXTENSION_BUNDLE_ID,
-    ExtensionActivationStatus, ExtensionInstaller, Frame, FrameMetadata, FrameTransportSink,
-    MissingSourcePolicy, PipelineStage, PixelFormat, ProducerProgress, Rotation,
-    SCENE_PARSER_LIMITS, ScalingFilter, SceneChange, SceneDocument, SourceDescriptor, SourceFit,
-    SourceHealthSummary, SourceHealthVector, SourceKind, SourceTransform, SyntheticFrameSource,
-    ThreadedNokhwaFrameSource, VIRTUAL_CAMERA_DEFAULT_FPS, VIRTUAL_CAMERA_FPS_PRESETS,
-    VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS, VIRTUAL_CAMERA_WIDTH, VideoFormat,
+    CameraDevice, CaptureErrorKind, CapturedFrame, CompositionLayout, ConsumerProgress,
+    EXTENSION_BUNDLE_ID, ErrorCode, ExtensionActivationStatus, ExtensionInstaller, Frame,
+    FrameMetadata, FrameTransportSink, MissingSourcePolicy, PipelineStage, PixelFormat,
+    ProducerProgress, Rotation, SCENE_PARSER_LIMITS, ScalingFilter, SceneChange, SceneDocument,
+    SourceDescriptor, SourceFit, SourceHealthSummary, SourceHealthVector, SourceKind,
+    SourceTransform, SyntheticFrameSource, ThreadedNokhwaFrameSource, VIRTUAL_CAMERA_DEFAULT_FPS,
+    VIRTUAL_CAMERA_FPS_PRESETS, VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS,
+    VIRTUAL_CAMERA_WIDTH, VideoFormat, camera_open_timeout,
 };
 use eframe::egui;
 
@@ -279,9 +280,11 @@ pub struct CameraManApp {
     /// unchecking a device drops its entry immediately, releasing the camera.
     /// The trailing `u32` is that camera's own consecutive-failure streak,
     /// tracked per source so one broken camera in a multi-camera composite
-    /// gets dropped on its own instead of spamming the status bar forever or
-    /// depending on the global `capture_error_streak` (which only ever sees
-    /// the all-cameras-failing case).
+    /// reports itself once, flips to the RETRY state and waits for the user,
+    /// instead of spamming the status bar forever or depending on the global
+    /// `capture_error_streak` (which only ever sees the all-cameras-failing
+    /// case). Nothing removes a failing camera automatically; the source keeps
+    /// its slot in the scene until the user retries or unchecks it.
     real_sources: Vec<(String, ThreadedNokhwaFrameSource, u32)>,
     extension_installer: ExtensionInstaller,
     extension_status_override: Option<ExtensionActivationStatus>,
@@ -313,6 +316,11 @@ pub struct CameraManApp {
     sticky_error: Option<String>,
     capture_error_streak: u32,
     waiting_for_camera: bool,
+    /// A selected camera's open/first-frame watchdog fired. Every surface that
+    /// speaks while no frame is on screen (status line, preview overlay, the
+    /// preview's accessible name) must then say the camera is not responding
+    /// instead of claiming it is still warming up.
+    camera_not_responding: bool,
     fps_window_start: Instant,
     fps_window_frames: u32,
     measured_fps: f32,
@@ -470,6 +478,7 @@ impl CameraManApp {
             sticky_error: None,
             capture_error_streak: 0,
             waiting_for_camera: false,
+            camera_not_responding: false,
             fps_window_start: Instant::now(),
             fps_window_frames: 0,
             measured_fps: 0.0,
@@ -593,7 +602,7 @@ impl CameraManApp {
             ProvisioningProfileStatus::Invalid { .. } => ("invalid", "unavailable"),
         };
         format!(
-            "CameraMan {}\nlaunch={}\nsigning_team_id={}\nprovisioning_profile={}\nprofile_team_id={}\nextension_profile_present={}\nactivation_capable={}\nactivation_capability_reason={}\nactivation_status={}\ntransport={}\nreduce_motion={}\ndifferentiate_without_color={}\nvoice_over_enabled={}\n",
+            "CameraMan {}\nlaunch={}\nsigning_team_id={}\nprovisioning_profile={}\nprofile_team_id={}\nextension_profile_present={}\nactivation_capable={}\nactivation_capability_reason={}\nactivation_status={}\ntransport={}\ncamera_open_timeout_ms={}\nreduce_motion={}\ndifferentiate_without_color={}\nvoice_over_enabled={}\n",
             env!("CARGO_PKG_VERSION"),
             self.launch_context.label(),
             self.signing_team_identifier
@@ -608,6 +617,7 @@ impl CameraManApp {
                 .unwrap_or("ready"),
             self.extension_status(),
             self.virtual_endpoint,
+            camera_open_timeout().as_millis(),
             self.reduce_motion,
             self.differentiate_without_color,
             self.voice_over_enabled,
@@ -692,6 +702,7 @@ impl CameraManApp {
         self.invalidate_render_epoch();
         self.real_sources.clear();
         self.waiting_for_camera = false;
+        self.camera_not_responding = false;
         self.measured_fps = 0.0;
         self.disconnect_virtual_output();
         // No real sources left open: in Auto mode this drops back to the shared
@@ -746,6 +757,9 @@ impl CameraManApp {
         force_preview: bool,
     ) {
         self.waiting_for_camera = false;
+        // `real_frames` reassigns this on every tick that reaches it; the reset
+        // covers the early return below, where no camera is polled at all.
+        self.camera_not_responding = false;
         self.recompute_active_fps();
         let source_ids = self.selected_source_ids();
         if source_ids.is_empty() {
@@ -1142,10 +1156,15 @@ impl CameraManApp {
         }
         if self.running {
             if self.waiting_for_camera {
-                (
-                    COLOR_WARNING,
-                    tr(self.locale, UiText::WaitingForCamera).to_owned(),
-                )
+                // The status line, the preview overlay and the preview's
+                // accessible name all derive their wording from one decision,
+                // so a not-responding camera cannot be announced as a warm-up
+                // on any of them.
+                let (headline, _) = ui::waiting_overlay_text(
+                    self.camera_not_responding,
+                    self.fixture_state == Some(UiFixtureState::Disconnected),
+                );
+                (COLOR_WARNING, tr(self.locale, headline).to_owned())
             } else {
                 (COLOR_OK, tr(self.locale, UiText::PreviewRunning).to_owned())
             }

@@ -39,8 +39,8 @@ use camera_man::FrameSource;
 use camera_man::{
     APP_GROUP_INFO_KEY, CameraDiscovery, CompositionLayout, Compositor, EXTENSION_BUNDLE_ID,
     FrameTransportMode, FrameTransportSink, NokhwaCameraDiscovery, PixelFormat,
-    SyntheticFrameSource, VideoFormat, VirtualCameraConfig, capture_one_with_timeout,
-    default_frame_limits, write_ppm,
+    SyntheticFrameSource, VideoFormat, VirtualCameraConfig, camera_open_timeout,
+    capture_one_with_timeout, default_frame_limits, write_ppm,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

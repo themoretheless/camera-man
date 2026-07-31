@@ -67,6 +67,10 @@ impl CameraManApp {
     /// `u32` in `real_sources`). The capture worker reconnects with bounded
     /// exponential backoff, while this coordinator keeps the source selected
     /// and exposes a stable RETRY state to the UI.
+    ///
+    /// A camera whose open or first frame never returns reports a capture
+    /// timeout through this same `Err` path, so it advances the streak like any
+    /// other failure instead of resetting it through an indefinite `Ok(None)`.
     fn real_frames(
         &mut self,
         selected_camera_ids: &[String],
@@ -108,6 +112,7 @@ impl CameraManApp {
         // from inside it.
         let mut new_failures = Vec::new();
         let mut recovered_ids = Vec::new();
+        let mut open_timed_out = false;
         for id in selected_camera_ids {
             let Some((_, source, streak)) =
                 self.real_sources.iter_mut().find(|(runtime_id, _, _)| {
@@ -129,6 +134,7 @@ impl CameraManApp {
                     frames.push(frame);
                 }
                 Err(error) => {
+                    open_timed_out |= error.code() == ErrorCode::Capture(CaptureErrorKind::Timeout);
                     let source_name = self
                         .real_devices
                         .iter()
@@ -145,6 +151,8 @@ impl CameraManApp {
                 }
             }
         }
+
+        self.camera_not_responding = open_timed_out;
 
         if let Some((source_name, error)) =
             first_error.filter(|_| camera_failure_is_scene_wide(&self.selected_sources, ok_count))
@@ -174,12 +182,18 @@ impl CameraManApp {
         // Reopen through the existing runtime locator when it is a migrated
         // alias. Its capture lease then remains identical to the retiring
         // worker's lease, so Retry cannot open the same physical device twice.
-        let reopen_id = self
+        let previous = self
             .real_sources
             .iter()
-            .find(|(runtime_id, _, _)| camera_locators_match(runtime_id, id, &self.real_devices))
+            .find(|(runtime_id, _, _)| camera_locators_match(runtime_id, id, &self.real_devices));
+        let reopen_id = previous
             .map(|(runtime_id, _, _)| runtime_id.clone())
             .unwrap_or_else(|| id.to_owned());
+        // A wedged worker keeps the camera's lease until the backend returns,
+        // so the replacement inherits its stall instead of spending another
+        // full deadline looking like a fresh warm-up.
+        let inherited_stall =
+            previous.map_or(Duration::ZERO, |(_, source, _)| source.stalled_open_age());
         self.real_sources.retain(|(runtime_id, _, _)| {
             !camera_locators_match(runtime_id, id, &self.real_devices)
         });
@@ -197,7 +211,11 @@ impl CameraManApp {
             };
             self.real_sources.push((
                 reopen_id.clone(),
-                ThreadedNokhwaFrameSource::open_id_with_target(&reopen_id, capture_target),
+                ThreadedNokhwaFrameSource::reopen_id_with_target(
+                    &reopen_id,
+                    capture_target,
+                    inherited_stall,
+                ),
                 0,
             ));
         }

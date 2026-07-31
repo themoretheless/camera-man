@@ -142,6 +142,7 @@ pub(super) enum UiText {
     SelectSourceToBegin,
     CameraDisconnected,
     ReconnectCamera,
+    CameraNotResponding,
 }
 
 impl UiText {
@@ -284,6 +285,7 @@ impl UiText {
         Self::SelectSourceToBegin,
         Self::CameraDisconnected,
         Self::ReconnectCamera,
+        Self::CameraNotResponding,
     ];
 }
 
@@ -602,6 +604,8 @@ pub(super) fn tr(locale: UiLocale, text: UiText) -> &'static str {
         (UiLocale::Russian, UiText::ReconnectCamera) => {
             "Подключите камеру и обновите список источников"
         }
+        (UiLocale::English, UiText::CameraNotResponding) => "Camera is not responding",
+        (UiLocale::Russian, UiText::CameraNotResponding) => "Камера не отвечает",
     }
 }
 

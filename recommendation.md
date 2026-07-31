@@ -247,10 +247,10 @@ Exactly 700 numbered items: done work, improvements, problems, mistakes, design 
 238. Исправлено: Stop -> immediate Start больше не opens same id concurrently.
 239. Сделано: process-local camera lease serves as asynchronous release acknowledgement.
 240. Сделано: replacement worker waits off-thread until old worker drops its lease.
-241. Проблема: capture timeout helper can leave detached work.
+241. Проблема (остаётся): `capture_one_with_timeout` leaves detached work. It opens through `NokhwaFrameSource::open_id` and takes no camera lease at all, so a timed-out one-shot capture is neither cancelled nor serialized against the capture worker.
 242. Улучшение: design cancellable capture open.
-243. Проблема: nokhwa cancellation hooks may be limited.
-244. Улучшение: document backend limitation clearly.
+243. Ограничение: nokhwa exposes no cancellation hook. In the capture worker the abandoned open is now bounded and keeps its camera lease, so detached work there cannot double-open a device; the parked thread still cannot be reclaimed, and `capture_one_with_timeout` remains lease-free.
+244. Сделано: the abandoned-open policy is documented in architecture.md, README.md and the capture module.
 245. Проблема: Continuity Camera behavior may differ from built-in camera.
 246. Улучшение: add device-specific diagnostics.
 247. Исправлено: capture больше не принимает backend default или абсолютный max-FPS; target-aware negotiation проверяет output geometry/rate для каждого декодируемого формата.
@@ -873,7 +873,7 @@ Ran a 15-agent adversarial review targeted at exactly the four areas above, plus
 Confirmed and fixed:
 
 - `extension_main.rs`: `stop_streaming` only flipped a bool; `start_streaming` could race ahead and spawn a second `stream_samples` thread before the first noticed and exited, leaving two threads sending samples to the same `CMIOExtensionStream` concurrently. Fixed by having `start_streaming` join the previous worker thread before spawning a replacement.
-- `app.rs`: a permanently broken camera in a multi-camera composite re-posted its error every tick, which reset the message's TTL every time and both blocked any other status-bar message forever and never engaged the auto-stop safety net (that only ever saw the all-cameras-failing case). Fixed with a per-source failure streak that posts once and auto-drops the camera after `MAX_CAPTURE_ERROR_STREAK`.
+- `app.rs`: a permanently broken camera in a multi-camera composite re-posted its error every tick, which reset the message's TTL every time and both blocked any other status-bar message forever and never engaged the auto-stop safety net (that only ever saw the all-cameras-failing case). Fixed with a per-source failure streak that posts once and then holds the source in a RETRY state with a manual reconnect control. No automatic drop was added: nothing in this tree removes a failing camera on its own.
 - `app.rs`: if every selected real camera disappeared while running, the status bar kept showing "Preview running" in green with nothing being captured. Fixed: this path now stops the preview and posts an explicit event.
 - `main.rs` / `system_extension.rs`: the extension bundle id was still duplicated across the `Info.plist` template and the `.systemextension` path despite `architecture.md` already listing this as an open DRY violation from an earlier pass; unified behind `EXTENSION_BUNDLE_ID`.
 - `app.rs`: the "Install extension" button stayed clickable even on an ad-hoc-signed bundle where activation is guaranteed to fail. It is now gated on `extension_capability()`, which checks both that the process runs from an installed `.app` bundle and that the bundle's own entitlements (read via `codesign`) actually grant `system-extension.install`.
@@ -896,8 +896,9 @@ Fixed in the final publication pass:
 
 Still open (see architecture.md's per-iteration "Still open" lists for the full picture):
 
-- A real camera whose `open()` call itself hangs is indistinguishable from one merely warming up, so it never counts toward any failure streak. Needs a bounded, generous open-timeout in the capture worker.
-- Client authorization in the CMIO extension is logged but not actually enforced (any local process can still connect).
+- A camera whose `open()` never returns is now reported as a capture timeout after a bounded deadline (`CAMERAMAN_CAMERA_OPEN_TIMEOUT_MS`, default 20 s) and behaves like any other broken source. What stays open is reclamation: the abandoned open keeps its worker thread and its camera lease until the driver returns. The watchdog covers `ThreadedNokhwaFrameSource` only; the one-shot `capture_one_with_timeout` helper still spawns lease-free detached work.
+- Correction to the second pass above: `MAX_CAPTURE_ERROR_STREAK` and its auto-drop do not exist in this tree. A failing camera posts once, shows RETRY and stays selected until the user acts, which is the intended policy.
+- Client connect and stream-start callbacks in the CMIO extension now enforce a signing-identity policy; a real signed-extension install is still needed to exercise the deny path against a live CMIO host.
 - Production bundles now validate matching App Group entitlements and resolve a shared container mmap; a real paid-profile machine test remains external.
 - Borrowed mmap reads removed the intermediate owned Rust frame; one measured mmap publish copy and one pooled `CVPixelBuffer` upload remain, with IOSurface still evidence-gated.
 - Real system-extension install still needs a paid Apple Developer Program membership with the System Extension capability; the free personal-team certificate now present on this machine (`Apple Development: d.o.mezhov@gmail.com`, team `VBA8KCMNX7`) can sign a plain app but cannot carry that capability. Next hardening step: validate Team ID/certificate/profile matching, not just the app id and entitlement.

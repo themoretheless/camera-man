@@ -595,8 +595,14 @@ impl CameraManApp {
         ui.add_space(((available.y - preview_size.y) / 2.0).max(0.0));
         ui.horizontal_centered(|ui| {
             let (rect, response) = ui.allocate_exact_size(preview_size, egui::Sense::hover());
+            let (overlay_headline, overlay_recovery) = waiting_overlay_text(
+                self.camera_not_responding,
+                self.fixture_state == Some(UiFixtureState::Disconnected),
+            );
+            // The accessible name and the painted overlay must agree: a
+            // not-responding camera must not be announced as a warm-up.
             let preview_state = if self.waiting_for_camera {
-                tr(self.locale, UiText::WaitingForCamera)
+                tr(self.locale, overlay_headline)
             } else if self.running {
                 tr(self.locale, UiText::PreviewRunning)
             } else if self.preview_texture.is_some() {
@@ -634,16 +640,11 @@ impl CameraManApp {
             if self.waiting_for_camera {
                 ui.painter()
                     .rect_filled(rect, 4.0, egui::Color32::from_black_alpha(150));
-                let disconnected = self.fixture_state == Some(UiFixtureState::Disconnected);
                 paint_centered_message(
                     ui,
                     rect,
-                    if disconnected {
-                        tr(self.locale, UiText::CameraDisconnected)
-                    } else {
-                        tr(self.locale, UiText::WaitingForCamera)
-                    },
-                    disconnected.then(|| tr(self.locale, UiText::ReconnectCamera)),
+                    tr(self.locale, overlay_headline),
+                    overlay_recovery.map(|text| tr(self.locale, text)),
                     COLOR_WARNING,
                 );
             }
@@ -771,6 +772,22 @@ impl CameraManApp {
             });
         });
     }
+}
+
+/// Wording for every surface that speaks while no camera frame is on screen:
+/// the painted overlay, the preview's accessible name and the status line. A
+/// camera whose open never returned must not read as a warm-up on any of them.
+pub(super) fn waiting_overlay_text(
+    not_responding: bool,
+    disconnected: bool,
+) -> (UiText, Option<UiText>) {
+    if not_responding {
+        return (UiText::CameraNotResponding, Some(UiText::RetryCamera));
+    }
+    if disconnected {
+        return (UiText::CameraDisconnected, Some(UiText::ReconnectCamera));
+    }
+    (UiText::WaitingForCamera, None)
 }
 
 fn paint_centered_message(
@@ -925,5 +942,30 @@ fn reorder_buttons(
         .clicked()
     {
         *action = Some((position, position - 1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_not_responding_camera_overrides_the_warm_up_overlay() {
+        assert_eq!(
+            waiting_overlay_text(true, false),
+            (UiText::CameraNotResponding, Some(UiText::RetryCamera))
+        );
+        assert_eq!(
+            waiting_overlay_text(true, true),
+            (UiText::CameraNotResponding, Some(UiText::RetryCamera))
+        );
+        assert_eq!(
+            waiting_overlay_text(false, true),
+            (UiText::CameraDisconnected, Some(UiText::ReconnectCamera))
+        );
+        assert_eq!(
+            waiting_overlay_text(false, false),
+            (UiText::WaitingForCamera, None)
+        );
     }
 }

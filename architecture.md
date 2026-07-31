@@ -150,6 +150,7 @@ src/capture.rs
   NokhwaCameraDiscovery
   NokhwaFrameSource
   ThreadedNokhwaFrameSource
+  bounded open/first-frame watchdog over the process-local camera lease
   capture_one_with_timeout
 
 src/virtual_camera.rs
@@ -679,12 +680,33 @@ Reviewed and fixed:
   snapshots.
 - Scene import reads at most 1 MiB even if a file grows during validation, and
   export writes, syncs and atomically renames a same-directory temporary file.
+- A camera whose backend `open()` never returned used to publish no error, no
+  negotiated format and no frame, so the app read `Ok(None)` forever and the
+  per-source streak was reset rather than advanced. The worker now publishes its
+  pre-streaming phase (lease wait, open, first read); the reader bounds that
+  phase with a deadline (`CAMERAMAN_CAMERA_OPEN_TIMEOUT_MS`, default 20 s, an
+  estimate rather than a measured figure, covering the whole format negotiation
+  and not one device open) and reports a capture timeout, so the source turns
+  RETRY, states that the camera is not responding on the status line, the
+  preview overlay and the preview's accessible name alike, and offers manual
+  reconnect. Retrying such a camera inherits the stall of the worker that still
+  holds its lease, so the replacement does not spend a second deadline looking
+  like a fresh warm-up.
 
 Still open:
 
-- A real camera whose backend `open()` call itself hangs cannot be interrupted
-  through nokhwa. A future backend adapter must provide a genuinely cancelable
-  open operation; an outer timeout alone cannot reclaim the blocked driver.
+- The abandoned open cannot be reclaimed. nokhwa exposes no cancellation hook,
+  so the timed-out worker thread stays parked inside the backend and keeps its
+  camera lease; that id cannot be reopened until the driver returns. The
+  watchdog reports, it does not cancel. A future backend adapter must provide a
+  genuinely cancelable open operation.
+- A read that hangs mid-stream, after frames have already arrived, is still only
+  visible as a frozen preview. The watchdog covers the phases before the first
+  frame.
+- The watchdog covers `ThreadedNokhwaFrameSource` only. The one-shot
+  `capture_one_with_timeout` helper (used by `capture-demo`) still opens without
+  taking the camera lease, so its timed-out thread is detached work that is
+  neither cancelled nor serialized against the capture worker.
 
 ### Iteration 3: Virtual Output and Packaging
 

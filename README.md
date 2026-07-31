@@ -18,7 +18,7 @@ to a Rust CoreMediaIO system extension prototype.
 - Named scenes persist source order, layout, output settings, missing-source policy and typed per-source crop/fit/fill/mirror/rotate/opacity/position transforms.
 - Scene edits are transactional with bounded Undo/Redo: a pointer drag is coalesced into one history step instead of consuming the stack one frame at a time.
 - Versioned JSON import validates and previews migrations before applying, rejects files above 1 MiB, and exports through an atomic same-directory replacement.
-- Camera failures use bounded exponential reconnect with a visible manual Retry instead of deleting the source immediately; opening the device is not treated as recovery until a real frame arrives.
+- Camera failures use bounded exponential reconnect with a visible manual Retry instead of deleting the source immediately; opening the device is not treated as recovery until a real frame arrives. A camera whose open or first frame never returns is reported as a capture timeout after a bounded deadline instead of looking like an endless warm-up.
 - The Sources -> Preview -> Output workspace has a separate setup window, bounded RU/EN control text, high-contrast state, keyboard reorder, explicit AccessKit names and automated workspace/Setup minimum-window plus Retina fixture captures. Machine-oriented diagnostic payloads remain stable English.
 - Virtual Camera Self-Test publishes a color-bar pattern and waits for the extension's exact generation/sequence acknowledgement.
 - Composition and virtual-frame publication run on a latest-job worker instead of the egui thread, so slow frames are replaced rather than queued.
@@ -80,6 +80,12 @@ to a Rust CoreMediaIO system extension prototype.
   9,600 raw samples and no regressions. Rosetta baselines remain unchanged
   because this series did not execute an x86_64 process.
 - The default frame budget is 1/16 of physical RAM, clamped to 64 MiB–1 GiB; `CAMERAMAN_MAX_FRAME_BYTES` overrides it for controlled deployments.
+- The camera open timeout reports, it does not cancel. nokhwa exposes no
+  cancellation hook, so an abandoned open keeps one worker thread and the
+  camera's process-local lease until the driver returns, and that id cannot be
+  reopened before then. `CAMERAMAN_CAMERA_OPEN_TIMEOUT_MS` overrides the 20 s
+  default, and `camera-man check` prints the value in force as
+  `config.camera_open_timeout_ms`.
 - Every CoreMediaIO unsafe block has an enforced local invariant, and every
   callback body runs inside `contain_panic`: a panic is logged and answered with
   a conservative default (deny, empty list, refused start) instead of unwinding

@@ -14,6 +14,11 @@ use super::{SharedFrameReader, SharedFrameSink};
 
 static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
+/// Hang guard only: the concurrent reader exits the moment it observes the
+/// final frame, and the writer holds the sink until the reader acknowledges,
+/// so this deadline never decides pass or fail on a healthy machine.
+const CONCURRENT_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 struct TestMemory {
     name: String,
 }
@@ -332,17 +337,29 @@ fn concurrent_reader_never_observes_a_torn_frame() {
     sink.connect().unwrap();
     let mut reader = SharedFrameReader::try_open(&memory.name).unwrap().unwrap();
 
+    // Dropping the sink clears writer ownership and unlinks the name, after
+    // which every read reports no writer. The writer must therefore outlive the
+    // reader's acknowledgement, or a descheduled reader observes an ownerless
+    // region instead of the final frame.
+    let (reader_done_tx, reader_done_rx) = std::sync::mpsc::channel::<()>();
+
     let writer = std::thread::spawn(move || {
         for value in 1..=50_u8 {
             let frame = Frame::solid_bgra(64, 64, [value, value, value, 255]).unwrap();
             sink.send(&frame).unwrap();
             std::thread::sleep(std::time::Duration::from_micros(100));
         }
+        // Parks instead of spinning, and returns immediately on a disconnect if
+        // the reader unwinds on the tearing assertion.
+        let _ = reader_done_rx.recv_timeout(CONCURRENT_READ_DEADLINE);
+        drop(sink);
     });
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + CONCURRENT_READ_DEADLINE;
     let mut saw_last = false;
-    while std::time::Instant::now() < deadline && !saw_last {
+    // A writer that unwound publishes nothing further, so stop instead of
+    // spinning out the hang guard and burying its panic behind this one.
+    while !saw_last && !writer.is_finished() && std::time::Instant::now() < deadline {
         if let Some(transported) = reader.read_latest().unwrap() {
             let first = transported.frame.data()[0];
             assert!(
@@ -357,6 +374,10 @@ fn concurrent_reader_never_observes_a_torn_frame() {
             std::hint::spin_loop();
         }
     }
-    writer.join().unwrap();
+    let _ = reader_done_tx.send(());
+    if let Err(panic) = writer.join() {
+        // Re-raise with the writer's own message instead of an opaque `Any`.
+        std::panic::resume_unwind(panic);
+    }
     assert!(saw_last, "reader did not observe the final published frame");
 }

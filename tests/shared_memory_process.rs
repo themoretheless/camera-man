@@ -56,20 +56,12 @@ fn child_process_reads_the_file_backed_ring_and_lifecycle_cleans_it() {
 #[test]
 fn killed_writer_is_replaced_with_a_new_generation() {
     let memory = ProcessMemory::new();
-    let ready = memory.directory.join("writer.ready");
-    let mut child = Command::new(probe())
-        .arg("flood")
-        .arg(&memory.path)
-        .arg(&ready)
-        .spawn()
-        .unwrap();
-    wait_for_file(&ready, &mut child);
+    let mut writer = spawn_flood_writer(&memory);
 
     let reader = wait_for_reader(&memory.path);
     let crashed_generation = reader_generation(&memory.path);
     assert!(reader.writer_is_alive());
-    child.kill().unwrap();
-    child.wait().unwrap();
+    writer.kill();
     assert!(!reader.writer_is_alive());
 
     let capacity = VIRTUAL_CAMERA_WIDTH as usize * VIRTUAL_CAMERA_HEIGHT as usize * 4;
@@ -123,8 +115,7 @@ fn producer_death_during_a_read_is_contained_by_the_reader_process() {
     let mut reader = spawn_ready_watcher(&memory.path, &reader_ready, 400);
     wait_for_file(&reader_ready, &mut reader);
 
-    writer.kill().unwrap();
-    writer.wait().unwrap();
+    writer.kill();
 
     assert_success(reader.wait_with_output().unwrap());
 }
@@ -136,8 +127,7 @@ fn replacing_a_mapped_file_keeps_the_existing_reader_on_its_inode() {
     let reader_ready = memory.directory.join("replace-reader.ready");
     let mut reader = spawn_ready_watcher(&memory.path, &reader_ready, 300);
     wait_for_file(&reader_ready, &mut reader);
-    writer.kill().unwrap();
-    writer.wait().unwrap();
+    writer.kill();
 
     let old_path = memory.directory.join("frames-old.mmap");
     fs::rename(&memory.path, &old_path).unwrap();
@@ -153,8 +143,7 @@ fn permission_change_after_map_does_not_revoke_the_existing_reader() {
     let reader_ready = memory.directory.join("permission-reader.ready");
     let mut reader = spawn_ready_watcher(&memory.path, &reader_ready, 300);
     wait_for_file(&reader_ready, &mut reader);
-    writer.kill().unwrap();
-    writer.wait().unwrap();
+    writer.kill();
 
     fs::set_permissions(&memory.path, fs::Permissions::from_mode(0o000)).unwrap();
     let output = reader.wait_with_output().unwrap();
@@ -170,8 +159,7 @@ fn truncate_fault_is_contained_to_the_reader_child_process() {
     let reader_ready = memory.directory.join("truncate-reader.ready");
     let mut reader = spawn_ready_watcher(&memory.path, &reader_ready, 2_000);
     wait_for_file(&reader_ready, &mut reader);
-    writer.kill().unwrap();
-    writer.wait().unwrap();
+    writer.kill();
 
     fs::OpenOptions::new()
         .write(true)
@@ -209,16 +197,38 @@ fn spawn_ready_watcher(path: &Path, ready: &Path, duration_millis: u64) -> Child
         .unwrap()
 }
 
-fn spawn_flood_writer(memory: &ProcessMemory) -> Child {
+/// `flood` never exits on its own, so an unkilled child keeps publishing at
+/// full resolution and holds the inherited stdout pipe open for the rest of the
+/// harness run. Killing on drop keeps a panic between spawn and kill from
+/// leaking one.
+struct FloodWriter(Child);
+
+impl FloodWriter {
+    fn kill(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl Drop for FloodWriter {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+fn spawn_flood_writer(memory: &ProcessMemory) -> FloodWriter {
     let ready = memory.directory.join("writer.ready");
-    let mut child = Command::new(probe())
-        .arg("flood")
-        .arg(&memory.path)
-        .arg(&ready)
-        .spawn()
-        .unwrap();
-    wait_for_file(&ready, &mut child);
-    child
+    let mut writer = FloodWriter(
+        Command::new(probe())
+            .arg("flood")
+            .arg(&memory.path)
+            .arg(&ready)
+            .spawn()
+            .unwrap(),
+    );
+    // Wrapped before waiting so a readiness timeout still kills the child.
+    wait_for_file(&ready, &mut writer.0);
+    writer
 }
 
 fn run_watcher(path: &Path, duration_millis: u64, poll_millis: u64) -> Output {
@@ -235,18 +245,20 @@ fn assert_success(output: Output) {
     );
 }
 
+/// Hang guard only: readiness now means the probe published or observed a
+/// frame, which is bounded by scheduling rather than by a fixed window.
 fn wait_for_file(path: &Path, child: &mut Child) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if path.is_file() {
             return;
         }
         if let Some(status) = child.try_wait().unwrap() {
-            panic!("writer exited before ready: {status}");
+            panic!("probe exited before signalling ready: {status}");
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    panic!("writer readiness timed out");
+    panic!("probe readiness timed out");
 }
 
 fn wait_for_reader(path: &Path) -> SharedFrameReader {

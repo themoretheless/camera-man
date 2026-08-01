@@ -21,13 +21,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Hang guard for the first frame only. The observation window proper is
+/// measured from the first frame, so a child descheduled across the writer's
+/// start-up still observes for the full requested duration instead of
+/// expiring empty.
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn watch(
     path: &Path,
     duration_millis: u64,
     poll_millis: u64,
     ready_path: Option<&Path>,
 ) -> Result<(), Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_millis(duration_millis);
+    let window = Duration::from_millis(duration_millis);
+    let mut deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
     let mut reader = None;
     let mut observed = 0_u64;
     let mut last_sequence = None;
@@ -49,10 +56,11 @@ fn watch(
             }
             observed += 1;
             last_sequence = Some(frame.sequence);
-            if observed == 1
-                && let Some(ready_path) = ready_path
-            {
-                std::fs::write(ready_path, b"ready")?;
+            if observed == 1 {
+                deadline = Instant::now() + window;
+                if let Some(ready_path) = ready_path {
+                    std::fs::write(ready_path, b"ready")?;
+                }
             }
         }
         if poll_millis == 0 {
@@ -75,8 +83,8 @@ fn flood(path: &Path, ready_path: &Path) -> Result<(), Box<dyn Error>> {
     let capacity = VIRTUAL_CAMERA_WIDTH as usize * VIRTUAL_CAMERA_HEIGHT as usize * 4;
     let mut sink = SharedFrameSink::new_file(path, capacity);
     sink.connect()?;
-    std::fs::write(ready_path, b"ready")?;
     let mut value = 1_u8;
+    let mut announced = false;
     loop {
         let frame = Frame::solid_bgra(
             VIRTUAL_CAMERA_WIDTH,
@@ -84,6 +92,13 @@ fn flood(path: &Path, ready_path: &Path) -> Result<(), Box<dyn Error>> {
             [value, value, value, 255],
         )?;
         sink.send(&frame)?;
+        // Readiness must mean a frame is published, not merely that the region
+        // exists: a reader started on the weaker signal can exhaust its window
+        // before the first send lands.
+        if !announced {
+            std::fs::write(ready_path, b"ready")?;
+            announced = true;
+        }
         value = value.wrapping_add(1).max(1);
     }
 }

@@ -247,10 +247,10 @@ Exactly 700 numbered items: done work, improvements, problems, mistakes, design 
 238. Исправлено: Stop -> immediate Start больше не opens same id concurrently.
 239. Сделано: process-local camera lease serves as asynchronous release acknowledgement.
 240. Сделано: replacement worker waits off-thread until old worker drops its lease.
-241. Проблема (остаётся): `capture_one_with_timeout` leaves detached work. It opens through `NokhwaFrameSource::open_id` and takes no camera lease at all, so a timed-out one-shot capture is neither cancelled nor serialized against the capture worker.
+241. Исправлено: `capture_one_with_timeout` больше не spawns lease-free detached work. Оно открывает камеру через `ThreadedNokhwaFrameSource`, поэтому one-shot держит тот же process-local lease, что и capture worker, попадает под pre-frame watchdog, а timeout останавливает worker вместо того, чтобы оставить unleased open in flight.
 242. Улучшение: design cancellable capture open.
-243. Ограничение: nokhwa exposes no cancellation hook. In the capture worker the abandoned open is now bounded and keeps its camera lease, so detached work there cannot double-open a device; the parked thread still cannot be reclaimed, and `capture_one_with_timeout` remains lease-free.
-244. Сделано: the abandoned-open policy is documented in architecture.md, README.md and the capture module.
+243. Ограничение: nokhwa exposes no cancellation hook. Abandoned open теперь bounded и удерживает camera lease на обоих capture paths этого крейта (streaming worker и one-shot), поэтому detached work не может дважды открыть один camera id; lease keyed по строке id, а не по устройству, поэтому два locator'а одной камеры (`0` и `uid:<unique>`) берут разные lease, и parked thread по-прежнему нельзя reclaim до возврата backend.
+244. Сделано: abandoned-open policy покрывает оба capture path этого крейта и задокументирована в architecture.md, README.md и capture module; raw `NokhwaFrameSource::open_id`/`open_index` остаются public и lease-free (in-crate caller'ов у них не осталось), поэтому library consumer всё ещё может открыть устройство мимо lease.
 245. Проблема: Continuity Camera behavior may differ from built-in camera.
 246. Улучшение: add device-specific diagnostics.
 247. Исправлено: capture больше не принимает backend default или абсолютный max-FPS; target-aware negotiation проверяет output geometry/rate для каждого декодируемого формата.
@@ -896,7 +896,7 @@ Fixed in the final publication pass:
 
 Still open (see architecture.md's per-iteration "Still open" lists for the full picture):
 
-- A camera whose `open()` never returns is now reported as a capture timeout after a bounded deadline (`CAMERAMAN_CAMERA_OPEN_TIMEOUT_MS`, default 20 s) and behaves like any other broken source. What stays open is reclamation: the abandoned open keeps its worker thread and its camera lease until the driver returns. The watchdog covers `ThreadedNokhwaFrameSource` only; the one-shot `capture_one_with_timeout` helper still spawns lease-free detached work.
+- A camera whose `open()` never returns is now reported as a capture timeout after a bounded deadline (`CAMERAMAN_CAMERA_OPEN_TIMEOUT_MS`, default 20 s) and behaves like any other broken source. What stays open is reclamation: the abandoned open keeps its worker thread and its camera lease until the driver returns. The watchdog now covers both capture paths this crate uses: the one-shot `capture_one_with_timeout` runs on the same leased worker. The lease is keyed on the camera id string rather than the device, and the raw `NokhwaFrameSource` constructors stay public and lease-free.
 - Correction to the second pass above: `MAX_CAPTURE_ERROR_STREAK` and its auto-drop do not exist in this tree. A failing camera posts once, shows RETRY and stays selected until the user acts, which is the intended policy.
 - Client connect and stream-start callbacks in the CMIO extension now enforce a signing-identity policy; a real signed-extension install is still needed to exercise the deny path against a live CMIO host.
 - Production bundles now validate matching App Group entitlements and resolve a shared container mmap; a real paid-profile machine test remains external.

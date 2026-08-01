@@ -74,8 +74,18 @@ pub(super) fn list_cameras() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Headroom over `camera_open_timeout()` for the one-shot's own budget. The two
+/// clocks start microseconds apart, so equal budgets would let the caller's
+/// generic "no frame" message beat the source's watchdog, which names the phase
+/// that actually stalled (lease wait, open, first frame). The caller's deadline
+/// stays a backstop for the case where the watchdog itself cannot speak.
+const CAPTURE_DEMO_WATCHDOG_HEADROOM: Duration = Duration::from_secs(1);
+
 pub(super) fn capture_demo(output_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    let frame = capture_one_with_timeout("0", Duration::from_secs(5))?.into_frame();
+    // The app's own warm-up budget, so a slow but healthy device (external USB,
+    // Continuity wake) is not aborted here after the app would have waited.
+    let budget = camera_open_timeout().saturating_add(CAPTURE_DEMO_WATCHDOG_HEADROOM);
+    let frame = capture_one_with_timeout("0", budget)?.into_frame();
     let path = output_path.unwrap_or_else(|| PathBuf::from("target/camera-man-capture.ppm"));
     write_ppm(&path, &frame)?;
     println!("Captured real camera frame: {}", path.display());

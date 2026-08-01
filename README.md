@@ -85,7 +85,9 @@ to a Rust CoreMediaIO system extension prototype.
   camera's process-local lease until the driver returns, and that id cannot be
   reopened before then. `CAMERAMAN_CAMERA_OPEN_TIMEOUT_MS` overrides the 20 s
   default, and `camera-man check` prints the value in force as
-  `config.camera_open_timeout_ms`.
+  `config.camera_open_timeout_ms`. Both the app's capture worker and the
+  `capture-demo` one-shot go through that lease, so neither can open a camera id
+  the other holds.
 - Every CoreMediaIO unsafe block has an enforced local invariant, and every
   callback body runs inside `contain_panic`: a panic is logged and answered with
   a conservative default (deny, empty list, refused start) instead of unwinding
@@ -156,6 +158,10 @@ Capture one real camera frame:
 ```bash
 cargo run -- capture-demo
 ```
+
+The wait is bounded by `CAMERAMAN_CAMERA_OPEN_TIMEOUT_MS` (20 s default, plus a
+second of headroom so the watchdog names the phase that stalled), the same budget
+the app uses, and the camera id is leased for the attempt.
 
 Render a synthetic demo frame:
 

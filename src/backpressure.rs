@@ -41,6 +41,8 @@ pub const CAMERA_DISCOVERY_RESULTS: ChannelBackpressureContract = ChannelBackpre
     capacity: 1,
 };
 
+/// Realized as the capture worker's single `latest` frame slot, not as a
+/// channel: one slot, newest write wins, readers never block the worker.
 pub const CAPTURE_RESULTS: ChannelBackpressureContract = ChannelBackpressureContract {
     channel: "camera_capture_to_ui",
     policy: SlowConsumerPolicy::KeepLatest,

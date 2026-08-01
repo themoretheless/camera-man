@@ -151,7 +151,7 @@ src/capture.rs
   NokhwaFrameSource
   ThreadedNokhwaFrameSource
   bounded open/first-frame watchdog over the process-local camera lease
-  capture_one_with_timeout
+  capture_one_with_timeout (one-shot over the same leased worker)
 
 src/virtual_camera.rs
   VirtualCameraSink
@@ -691,7 +691,12 @@ Reviewed and fixed:
   preview overlay and the preview's accessible name alike, and offers manual
   reconnect. Retrying such a camera inherits the stall of the worker that still
   holds its lease, so the replacement does not spend a second deadline looking
-  like a fresh warm-up.
+  like a fresh warm-up. The one-shot `capture_one_with_timeout` behind
+  `capture-demo` runs on the same worker, so it takes the camera lease, is
+  bounded by the same deadline, and its timeout stops that worker instead of
+  leaving an unleased open in flight. `capture-demo` gives its own budget one
+  second of headroom over that deadline so the watchdog's phase-specific message
+  wins over a generic "no frame" report.
 
 Still open:
 
@@ -703,10 +708,12 @@ Still open:
 - A read that hangs mid-stream, after frames have already arrived, is still only
   visible as a frozen preview. The watchdog covers the phases before the first
   frame.
-- The watchdog covers `ThreadedNokhwaFrameSource` only. The one-shot
-  `capture_one_with_timeout` helper (used by `capture-demo`) still opens without
-  taking the camera lease, so its timed-out thread is detached work that is
-  neither cancelled nor serialized against the capture worker.
+- The lease reserves a camera id string, not a physical device. Two locators for
+  the same camera (`0` and `uid:<unique>`) take two different leases, and only
+  the app's own retry path resolves them against each other
+  (`camera_locators_match`); `capture_one_with_timeout` does not. Raw
+  `NokhwaFrameSource::open_id`/`open_index` also stay public and lease-free, with
+  no in-crate caller left, so a library consumer can still open past the lease.
 
 ### Iteration 3: Virtual Output and Packaging
 

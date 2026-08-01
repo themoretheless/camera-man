@@ -10,7 +10,6 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
-    mpsc,
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -478,7 +477,10 @@ impl OpenableSource for NokhwaFrameSource {
 /// surfaces as a normal error on the
 /// `last_error` slot instead of silently killing the thread with no signal:
 /// without this, `latest_frame()` would keep returning the last-known-good
-/// frame forever and the preview would look frozen-but-healthy.
+/// frame forever and the preview would look frozen-but-healthy. The open call
+/// is contained for the same reason, and a panicking open ends the worker:
+/// retrying it would re-enter the same panic while holding the camera lease
+/// against a replacement that might succeed.
 /// Each pre-frame phase is published to `slots` before the call that can block
 /// inside it, because a worker parked in the backend cannot report itself.
 fn run_capture_worker<S: OpenableSource>(
@@ -494,7 +496,24 @@ fn run_capture_worker<S: OpenableSource>(
     let mut backoff = ReconnectBackoff::default();
     while !stop.load(Ordering::Relaxed) {
         slots.publish_phase(WorkerPhase::Opening);
-        let mut source = match open(id, target) {
+        // An uncontained panic here would leave no signal at all: the worker is
+        // gone, so the watchdog would go on reporting the open as still running,
+        // which is false. Returning also releases the camera lease, which a
+        // dead worker would have released anyway.
+        let opened = match panic::catch_unwind(AssertUnwindSafe(|| open(id, target))) {
+            Ok(opened) => opened,
+            Err(panic_payload) => {
+                let message = panic_message(panic_payload);
+                *slots
+                    .last_error
+                    .lock()
+                    .expect("camera error mutex poisoned") = Some(CameraManError::capture(
+                    format!("camera open panicked: {message}"),
+                ));
+                return;
+            }
+        };
+        let mut source = match opened {
             Ok(source) => source,
             Err(error) => {
                 *slots
@@ -683,38 +702,55 @@ impl Drop for ThreadedNokhwaFrameSource {
     }
 }
 
+/// One frame from `id`, waited for up to `timeout`.
+///
+/// Runs on the same leased capture worker as the streaming path, so a one-shot
+/// can never open a camera id that a capture worker holds, and vice versa. A
+/// timeout drops the source, which sets `stop`: a worker still parked inside
+/// the backend keeps the camera's lease until that open returns and then exits
+/// without reopening, so a timed-out one-shot leaves no work that opens a
+/// device later. A timeout therefore means "camera still busy", not "camera
+/// free again".
+///
+/// `timeout` is the caller's budget only. The source's own pre-frame watchdog
+/// (`camera_open_timeout()`) names the phase that stalled (lease wait, open,
+/// first frame), which is the more useful report; whichever deadline expires
+/// first speaks. The source's clock starts after this one (thread spawn, lease
+/// acquisition), so a caller that wants the watchdog's message must budget
+/// strictly more than `camera_open_timeout()`, not the same value.
 pub fn capture_one_with_timeout(
     id: &str,
     timeout: Duration,
 ) -> Result<CapturedFrame, CameraManError> {
-    let id = id.to_string();
-    let (sender, receiver) = mpsc::sync_channel(crate::backpressure::CAPTURE_RESULTS.capacity);
+    let mut source = ThreadedNokhwaFrameSource::open_id(id);
+    first_frame_within(&mut source, id, timeout)
+}
 
-    // If this times out, the spawned thread is left detached: nokhwa has no
-    // cancellation hook, so the camera stays open until `open_id`/`frame()`
-    // unblocks on its own and the thread exits (send() then fails silently
-    // because the receiver is gone). Callers should treat a timeout here as
-    // "camera may still be warming up", not "camera is free again".
-    thread::spawn(move || {
-        let result = (|| {
-            let mut source = NokhwaFrameSource::open_id(&id)?;
-            source.latest_frame()?.ok_or(CameraManError::EmptyInput)
-        })();
-        let _ = sender.send(result);
-    });
-
-    match receiver.recv_timeout(timeout) {
-        Ok(result) => result,
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(CameraManError::capture_with_kind(
-            CaptureErrorKind::Timeout,
-            format!(
-                "timed out after {}ms waiting for a frame",
-                timeout.as_millis()
-            ),
-        )),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(CameraManError::capture(
-            "capture thread exited without sending a result",
-        )),
+/// Polls `source` until it publishes a frame, reports an error, or `timeout`
+/// expires. A source error outranks the deadline, so a named failure is never
+/// downgraded to a generic timeout.
+fn first_frame_within(
+    source: &mut impl FrameSource,
+    id: &str,
+    timeout: Duration,
+) -> Result<CapturedFrame, CameraManError> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(20);
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(frame) = source.latest_frame()? {
+            return Ok(frame);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(CameraManError::capture_with_kind(
+                CaptureErrorKind::Timeout,
+                format!(
+                    "camera {id} delivered no frame within {}ms",
+                    timeout.as_millis()
+                ),
+            ));
+        }
+        thread::sleep(remaining.min(POLL_INTERVAL));
     }
 }
 
@@ -731,6 +767,9 @@ fn nokhwa_error(error: nokhwa::NokhwaError) -> CameraManError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::SyntheticFrameSource;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc;
 
     #[test]
     fn converts_rgba_to_bgra_without_reallocating() {
@@ -874,6 +913,50 @@ mod tests {
         fn negotiated_format(&self) -> VideoFormat {
             TEST_TARGET
         }
+    }
+
+    /// Publishes nothing for the first `silent_polls` reads, then a real frame,
+    /// like a worker that is still warming up when the reader first polls it.
+    struct WarmingSource {
+        silent_polls: u32,
+        polls: u32,
+        inner: SyntheticFrameSource,
+    }
+
+    impl FrameSource for WarmingSource {
+        fn latest_frame(&mut self) -> Result<Option<CapturedFrame>, CameraManError> {
+            self.polls += 1;
+            if self.polls <= self.silent_polls {
+                return Ok(None);
+            }
+            self.inner.latest_frame()
+        }
+    }
+
+    /// Reports the same failure on every read, like a source whose worker
+    /// published an open failure or a watchdog timeout.
+    struct FailingSource;
+
+    impl FrameSource for FailingSource {
+        fn latest_frame(&mut self) -> Result<Option<CapturedFrame>, CameraManError> {
+            Err(CameraManError::capture_with_kind(
+                CaptureErrorKind::Timeout,
+                "opening camera uid:desk did not return after 20000ms",
+            ))
+        }
+    }
+
+    /// Polls `ready` until it holds or `budget` expires, so a test can observe a
+    /// worker's progress without pinning a wall-clock duration to it.
+    fn wait_until(budget: Duration, ready: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            if ready() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        ready()
     }
 
     #[test]
@@ -1045,5 +1128,196 @@ mod tests {
         slots.publish_phase(WorkerPhase::Opening);
         assert!(replacement.latest_frame().unwrap().is_none());
         assert_eq!(replacement.stalled_open_age(), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_one_shot_returns_the_first_frame_its_source_publishes() {
+        let mut source = WarmingSource {
+            silent_polls: 2,
+            polls: 0,
+            inner: SyntheticFrameSource::with_id("camera-0", 8, 8, [1, 2, 3, 255]),
+        };
+
+        let frame = first_frame_within(&mut source, "camera-0", Duration::from_secs(5))
+            .expect("an empty read is a retry, not a failure");
+
+        assert_eq!(frame.metadata().source_id, "camera-0");
+        assert_eq!(
+            source.polls, 3,
+            "the wait must end on the first real frame, not keep polling"
+        );
+    }
+
+    #[test]
+    fn a_one_shot_reports_the_sources_error_instead_of_waiting_out_its_deadline() {
+        let started = Instant::now();
+
+        let error = first_frame_within(&mut FailingSource, "uid:desk", Duration::from_secs(30))
+            .expect_err("a source that reports a failure must not read as a slow warm-up");
+
+        assert_eq!(error.code(), ErrorCode::Capture(CaptureErrorKind::Timeout));
+        assert!(
+            error
+                .diagnostic_message()
+                .contains("opening camera uid:desk did not return")
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_one_shot_that_never_receives_a_frame_times_out_naming_the_camera() {
+        let error = first_frame_within(&mut SilentSource, "uid:desk", Duration::ZERO)
+            .expect_err("a source that never publishes must not block forever");
+
+        assert_eq!(error.code(), ErrorCode::Capture(CaptureErrorKind::Timeout));
+        assert!(error.diagnostic_message().contains("uid:desk"));
+    }
+
+    #[test]
+    fn a_stopped_worker_does_not_open_the_camera_again_after_its_in_flight_open_returns() {
+        let id = "camera-stopped-worker-does-not-reopen";
+        let opens = Arc::new(AtomicUsize::new(0));
+        let slots = CaptureSlots::default();
+        let (entered_open, open_entered) = mpsc::channel();
+        let (release_open, open_released) = mpsc::channel();
+        let worker_slots = slots.clone();
+        let counter = Arc::clone(&opens);
+        let worker = thread::spawn(move || {
+            run_capture_worker(id, &worker_slots, TEST_TARGET, move |_, _| {
+                counter.fetch_add(1, Ordering::Relaxed);
+                entered_open.send(()).expect("test receiver dropped");
+                let _ = open_released.recv();
+                Ok(SilentSource)
+            });
+        });
+
+        open_entered.recv().expect("worker never reached open");
+        // What a timed-out one-shot does when it drops its source.
+        slots.stop.store(true, Ordering::Relaxed);
+        let _ = release_open.send(());
+        worker.join().expect("capture worker panicked");
+
+        assert_eq!(
+            opens.load(Ordering::Relaxed),
+            1,
+            "a stopped worker must not reopen the camera once its abandoned open returns"
+        );
+        assert!(
+            try_acquire_camera_lease(id).is_some(),
+            "the lease is released when the worker finishes, not when the caller gave up"
+        );
+    }
+
+    #[test]
+    fn a_panicking_open_is_reported_instead_of_leaving_the_worker_silently_dead() {
+        let id = "camera-open-panics";
+        let slots = CaptureSlots::default();
+        let worker_slots = slots.clone();
+        let worker = thread::spawn(move || {
+            run_capture_worker(
+                id,
+                &worker_slots,
+                TEST_TARGET,
+                |_, _| -> Result<SilentSource, CameraManError> { panic!("backend open exploded") },
+            );
+        });
+
+        worker
+            .join()
+            .expect("a panicking open must not unwind the worker thread");
+
+        let error = slots
+            .last_error
+            .lock()
+            .expect("camera error mutex poisoned")
+            .clone()
+            .expect("a panicking open must publish an error, not stay silent");
+        assert!(
+            error.diagnostic_message().contains("backend open exploded"),
+            "the panic message must reach the reader: {}",
+            error.diagnostic_message()
+        );
+        assert!(
+            try_acquire_camera_lease(id).is_some(),
+            "a worker that gave up on a panicking open must release the camera"
+        );
+    }
+
+    #[test]
+    fn a_one_shot_waits_for_the_camera_lease_instead_of_opening_the_device() {
+        let id = "camera-one-shot-waits-for-the-lease";
+        // Never released: the one-shot must be unable to reach a backend even if
+        // its worker is preempted between its stop check and its lease attempt.
+        // The id is unique to this test, so holding it forever is inert.
+        std::mem::forget(
+            try_acquire_camera_lease(id).expect("the test must start with the camera free"),
+        );
+
+        let error = capture_one_with_timeout(id, Duration::from_millis(100))
+            .expect_err("a one-shot must not open a camera id another path holds");
+
+        assert_eq!(error.code(), ErrorCode::Capture(CaptureErrorKind::Timeout));
+        assert!(
+            error
+                .diagnostic_message()
+                .contains("delivered no frame within 100ms"),
+            "a leased one-shot reports its own deadline, not a backend open failure: {}",
+            error.diagnostic_message()
+        );
+    }
+
+    #[test]
+    fn a_second_capture_path_cannot_open_a_camera_the_first_still_holds() {
+        let id = "camera-second-path-waits-for-the-first";
+        let opens_b = Arc::new(AtomicUsize::new(0));
+        let slots_a = CaptureSlots::default();
+        let slots_b = CaptureSlots::default();
+
+        let (entered_a, a_entered) = mpsc::channel();
+        let (release_a, a_released) = mpsc::channel();
+        let worker_slots_a = slots_a.clone();
+        let worker_a = thread::spawn(move || {
+            run_capture_worker(id, &worker_slots_a, TEST_TARGET, move |_, _| {
+                entered_a.send(()).expect("test receiver dropped");
+                let _ = a_released.recv();
+                Ok(SilentSource)
+            });
+        });
+        a_entered.recv().expect("first worker never reached open");
+
+        let (release_b, b_released) = mpsc::channel();
+        let worker_slots_b = slots_b.clone();
+        let counter_b = Arc::clone(&opens_b);
+        let worker_b = thread::spawn(move || {
+            run_capture_worker(id, &worker_slots_b, TEST_TARGET, move |_, _| {
+                counter_b.fetch_add(1, Ordering::Relaxed);
+                let _ = b_released.recv();
+                Ok(SilentSource)
+            });
+        });
+
+        thread::sleep(Duration::from_millis(50));
+        let opened_while_first_holds = opens_b.load(Ordering::Relaxed);
+
+        slots_a.stop.store(true, Ordering::Relaxed);
+        let _ = release_a.send(());
+        worker_a.join().expect("first capture worker panicked");
+
+        let opened_after_release = wait_until(Duration::from_millis(500), || {
+            opens_b.load(Ordering::Relaxed) == 1
+        });
+
+        slots_b.stop.store(true, Ordering::Relaxed);
+        let _ = release_b.send(());
+        worker_b.join().expect("second capture worker panicked");
+
+        assert_eq!(
+            opened_while_first_holds, 0,
+            "a second capture path must not open a camera id the first still holds"
+        );
+        assert!(
+            opened_after_release,
+            "the second path must open once the first releases the lease"
+        );
     }
 }

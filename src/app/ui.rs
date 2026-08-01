@@ -381,16 +381,12 @@ impl CameraManApp {
                 .real_sources
                 .iter()
                 .find(|(id, _, _)| camera_locators_match(id, &device.id, &self.real_devices))
-                .map(|(_, source, streak)| (*streak, source.negotiated_format()));
-            let health = match (checked, self.running, runtime) {
-                (false, _, _) => SourceHealthVector::off(),
-                (true, true, Some((streak, _))) if streak > 0 => {
-                    SourceHealthVector::retrying(u64::from(streak))
-                }
-                (true, true, Some((0, Some(_)))) => SourceHealthVector::connected(),
-                (true, true, _) => SourceHealthVector::waiting(),
-                (true, false, _) => SourceHealthVector::off(),
-            };
+                .map(|(_, source, streak)| RealSourceRuntime {
+                    failure_streak: *streak,
+                    negotiated_format: source.negotiated_format(),
+                    frame_gap_exceeded: source.frame_gap_exceeded(),
+                });
+            let health = real_source_health(checked, self.running, runtime);
             let selected = self.selected_source_id.as_deref() == Some(stable_key.as_str());
             ui.push_id(("real-source", &device.id), |ui| {
                 ui.horizontal(|ui| {
@@ -463,7 +459,7 @@ impl CameraManApp {
                         });
                     });
                 }
-                if let Some((_, Some(format))) = runtime {
+                if let Some(format) = runtime.and_then(|runtime| runtime.negotiated_format) {
                     ui.label(
                         egui::RichText::new(format!(
                             "    {}x{} · {} fps · decoded BGRA",
@@ -774,6 +770,44 @@ impl CameraManApp {
     }
 }
 
+/// What one open camera's capture source currently reports about itself.
+#[derive(Clone, Copy)]
+pub(super) struct RealSourceRuntime {
+    pub(super) failure_streak: u32,
+    pub(super) negotiated_format: Option<VideoFormat>,
+    pub(super) frame_gap_exceeded: bool,
+}
+
+/// Health for one real camera row. A read that hung after frames had arrived is
+/// Stale like any other failure, but it must not claim a reconnect is running:
+/// the worker is parked inside the backend and can reopen nothing. Arm order is
+/// load-bearing, because a stalled read also drives the failure streak above
+/// zero and would otherwise be described as `retrying`.
+pub(super) fn real_source_health(
+    checked: bool,
+    running: bool,
+    runtime: Option<RealSourceRuntime>,
+) -> SourceHealthVector {
+    match (checked, running, runtime) {
+        (false, _, _) => SourceHealthVector::off(),
+        (true, true, Some(runtime)) if runtime.frame_gap_exceeded => SourceHealthVector::stalled(),
+        (true, true, Some(runtime)) if runtime.failure_streak > 0 => {
+            SourceHealthVector::retrying(u64::from(runtime.failure_streak))
+        }
+        (
+            true,
+            true,
+            Some(RealSourceRuntime {
+                failure_streak: 0,
+                negotiated_format: Some(_),
+                ..
+            }),
+        ) => SourceHealthVector::connected(),
+        (true, true, _) => SourceHealthVector::waiting(),
+        (true, false, _) => SourceHealthVector::off(),
+    }
+}
+
 /// Wording for every surface that speaks while no camera frame is on screen:
 /// the painted overlay, the preview's accessible name and the status line. A
 /// camera whose open never returned must not read as a warm-up on any of them.
@@ -966,6 +1000,47 @@ mod tests {
         assert_eq!(
             waiting_overlay_text(false, false),
             (UiText::WaitingForCamera, None)
+        );
+    }
+
+    const TEST_FORMAT: VideoFormat = VideoFormat {
+        width: 1280,
+        height: 720,
+        fps: 30,
+        pixel_format: PixelFormat::Bgra8,
+    };
+
+    fn streaming_runtime(failure_streak: u32, frame_gap_exceeded: bool) -> RealSourceRuntime {
+        RealSourceRuntime {
+            failure_streak,
+            negotiated_format: Some(TEST_FORMAT),
+            frame_gap_exceeded,
+        }
+    }
+
+    #[test]
+    fn a_stalled_read_reports_stale_without_claiming_a_reconnect_is_running() {
+        let health = real_source_health(true, true, Some(streaming_runtime(0, true)));
+
+        assert_eq!(health.freshness, camera_man::FreshnessHealth::Stale);
+        assert_eq!(health.reconnect, camera_man::ReconnectHealth::Connected);
+        assert_eq!(health.summary(), SourceHealthSummary::Retry);
+        assert!(health.description().contains("freshness=Stale"));
+    }
+
+    #[test]
+    fn a_stalled_read_outranks_the_failure_streak_in_the_source_row() {
+        assert_eq!(
+            real_source_health(true, true, Some(streaming_runtime(3, true))),
+            SourceHealthVector::stalled()
+        );
+    }
+
+    #[test]
+    fn a_running_camera_with_current_frames_still_reports_connected() {
+        assert_eq!(
+            real_source_health(true, true, Some(streaming_runtime(0, false))),
+            SourceHealthVector::connected()
         );
     }
 }

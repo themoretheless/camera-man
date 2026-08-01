@@ -697,6 +697,34 @@ Reviewed and fixed:
   leaving an unleased open in flight. `capture-demo` gives its own budget one
   second of headroom over that deadline so the watchdog's phase-specific message
   wins over a generic "no frame" report.
+- A read that hung after frames had already arrived was invisible: the pre-frame
+  watchdog stops at `Streaming`, and the reader kept handing out the same
+  `CapturedFrame`, so the preview froze while the source row still read OK. The
+  reader now bounds the gap between published frames, with a deadline of 60
+  negotiated frame intervals floored at the composite's own 2 s staleness limit,
+  so a slow camera is judged on its own rate instead of a flat constant and the
+  capture watchdog can never name a camera unresponsive while its picture is
+  still being composited. The gap is timed on the worker's phase clock, which
+  `publish_phase` rewrites for every published frame, and deliberately not on the
+  frame's own capture timestamp: `FrameMetadata::age` measures on
+  `CLOCK_MONOTONIC`, which on Darwin keeps advancing while the machine sleeps,
+  while `Instant` (`CLOCK_UPTIME_RAW`) does not. Measured on this hardware the
+  two are ~42 h apart, so a frame timestamped before a lid-close would come back
+  from wake looking hours old and every sleep/wake would be reported as a wedged
+  camera. The phase clock spans the same interval and counts only the time the
+  camera was awake to deliver. Past the deadline `latest_frame` reports a capture
+  timeout, so the source turns RETRY with `freshness=Stale` (and
+  `reconnect=Connected`, because a worker parked in a backend read is reopening
+  nothing), the status line, overlay and accessible name say the camera is not
+  responding, and manual Retry stays available. The claim is gated on the state
+  it asserts: a worker with a published error or a cleared `negotiated_format`
+  has already named its failure or has left the read for reconnect backoff, and
+  that window stays `retrying`. The two watchdogs partition on
+  `WorkerPhase::Streaming`, so exactly one of them can speak for any worker.
+  Frames resuming clear the state on the next poll through the existing recovery
+  path, with no reopen. Retry now inherits a mid-stream stall the same way it
+  already inherited a hung open's, because either kind of parked worker keeps the
+  camera lease.
 
 Still open:
 
@@ -705,9 +733,24 @@ Still open:
   camera lease; that id cannot be reopened until the driver returns. The
   watchdog reports, it does not cancel. A future backend adapter must provide a
   genuinely cancelable open operation.
-- A read that hangs mid-stream, after frames have already arrived, is still only
-  visible as a frozen preview. The watchdog covers the phases before the first
-  frame.
+- A stalled read cannot be cancelled any more than a stalled open can, for the
+  same missing nokhwa hook. Recovery needs the driver to return; until it does,
+  the worker keeps the camera lease and Retry can only queue a replacement behind
+  it.
+- After Retry, the replacement's lease wait is still budgeted by
+  `camera_open_timeout` (20 s) while the stall it inherits is only past the
+  frame-gap deadline, so it can read as "Waiting for camera" for the remainder of
+  that budget before naming the camera again. Better than restarting from zero,
+  still not exact; giving the replacement the deadline its predecessor actually
+  blew would close it.
+- A driver that keeps returning fresh timestamps with unchanged pixels is not
+  detectable by any timestamp: both the sequence and the capture time advance.
+  That case remains uncovered.
+- The composite still ages frames on `CLOCK_MONOTONIC`
+  (`prepare_sources`/`SOURCE_STALE_AFTER`), so after a system sleep the first
+  poll counts the pre-sleep frame as missing until a new one lands. That is a
+  `missing N` count and a brief freeze-briefly fallback, not an error, and it
+  clears on the next frame; the capture watchdog no longer joins it.
 - The lease reserves a camera id string, not a physical device. Two locators for
   the same camera (`0` and `uid:<unique>`) take two different leases, and only
   the app's own retry path resolves them against each other

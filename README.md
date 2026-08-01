@@ -88,6 +88,13 @@ to a Rust CoreMediaIO system extension prototype.
   `config.camera_open_timeout_ms`. Both the app's capture worker and the
   `capture-demo` one-shot go through that lease, so neither can open a camera id
   the other holds.
+- A read that stalls after streaming has started is bounded separately, by a
+  deadline derived from the camera's negotiated frame rate (60 frame intervals,
+  floored at the 2 s limit past which the compositor already stops using a frame)
+  rather than by a flat constant, so a slow but healthy camera is judged on its
+  own rate. It reports and does not cancel for the same reason the open timeout
+  does, and it introduces no new environment variable: a tunable floor could only
+  drift below the compositor limit it exists to respect.
 - Every CoreMediaIO unsafe block has an enforced local invariant, and every
   callback body runs inside `contain_panic`: a panic is logged and answered with
   a conservative default (deny, empty list, refused start) instead of unwinding
@@ -559,7 +566,7 @@ Current UI limits:
 
 - reorder deliberately uses accessible up/down commands rather than drag and drop;
 - rendered cells have no optional source-name overlays;
-- a camera driver that hangs inside an underlying `open()` call cannot be cancelled by nokhwa.
+- a camera driver that hangs inside an underlying `open()` call **or inside a frame read** cannot be cancelled by nokhwa.
 
 Implemented research-backed design:
 

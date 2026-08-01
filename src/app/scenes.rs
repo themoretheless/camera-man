@@ -332,6 +332,14 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn the_capture_freshness_floor_is_not_shorter_than_the_composites_own_staleness() {
+        // The capture watchdog must never name a camera unresponsive while this
+        // module is still compositing that camera's frame. Nothing else keeps
+        // the two constants from drifting apart in opposite directions.
+        assert!(camera_man::capture::MIN_FRAME_GAP_TIMEOUT >= SOURCE_STALE_AFTER);
+    }
+
+    #[test]
     fn scene_content_comparison_ignores_only_active_name() {
         let base = SceneSnapshot {
             sources: vec![SourceDescriptor::synthetic("desk")],

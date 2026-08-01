@@ -495,7 +495,7 @@ Exactly 700 numbered items: done work, improvements, problems, mistakes, design 
 483. Проблема: extension cannot tell user-facing app status.
 484. Улучшение: add reverse status channel later.
 485. Проблема: no source-level latency display.
-486. Улучшение: show per-source freshness.
+486. Сделано: per-source freshness is observable, not only visible as a frozen preview. A read that hangs after frames have arrived is bounded by a deadline derived from the negotiated frame rate (60 intervals, floored at the composite's 2 s staleness limit), reported as a capture timeout and shown as FreshnessHealth::Stale with manual Retry.
 487. Проблема: app cannot save/restore camera choices robustly.
 488. Улучшение: persist by stable device id and name fallback.
 489. Проблема: no handling for camera unplug mid-stream beyond source error.

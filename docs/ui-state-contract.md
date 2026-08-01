@@ -10,7 +10,7 @@ exports. Runtime state must not turn these sections into nested cards.
 | Permission denied | Sticky operation/cause message | Allow CameraMan in Privacy & Security, retry |
 | Disconnected | Named source plus disconnected preview/status | Reconnect, refresh cameras, retry |
 | Not responding | `Camera is not responding` on the overlay, the preview's accessible name and the status line (the sticky timeout message takes the line until dismissed), plus a RETRY badge | Retry the source, reconnect the camera, export diagnostics if it repeats |
-| Stale | Named source health and stale counter | Retry source or choose missing-source policy |
+| Stale | Named source health reading `freshness=Stale` with a RETRY badge and the ↻ control, the `missing N` counter from the missing-source policy, and, for an all-camera scene, the same `Camera is not responding` overlay as the Not responding row | Retry the source (bounded by the camera lease, so it completes only once the driver returns) or choose a missing-source policy |
 | Extension missing | Setup readiness checklist | Install a signed bundle in `/Applications` |
 | Activation pending | Static/animated progress plus text | Approve in System Settings or close Setup |
 | Install failed | Cause and Retry before technical details | Correct signing/profile issue, retry |

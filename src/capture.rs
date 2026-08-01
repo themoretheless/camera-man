@@ -149,9 +149,74 @@ impl CaptureSlots {
 /// How long a pre-streaming phase has run once it is past its deadline. `None`
 /// while the phase is still within budget or the device is streaming, so a
 /// healthy warm-up is never reported as broken and `Ok(None)` keeps its
-/// documented "no frame ready" meaning.
+/// documented "no frame ready" meaning. `frame_gap_stall_age` owns the
+/// `Streaming` phase this one refuses, so the two partition `WorkerPhase`
+/// between them and exactly one can speak for any worker.
 fn open_stall_age(phase: WorkerPhase, elapsed: Duration, timeout: Duration) -> Option<Duration> {
     (phase != WorkerPhase::Streaming && elapsed >= timeout).then_some(elapsed)
+}
+
+/// Frames from a healthy camera arrive one negotiated interval apart, so the
+/// budget for the next one is a multiple of that interval rather than a flat
+/// constant: a 5 fps camera must not be judged on a 30 fps clock. Like
+/// `camera_open_timeout`'s 20 s this is a policy estimate, not a measured
+/// device figure; 60 intervals lands exactly on the floor below at the shared
+/// 30 fps default, so the floor only ever raises the deadline for slower
+/// cameras and never shortens it for faster ones.
+const FRAME_GAP_INTERVALS: u32 = 60;
+
+/// Floor under the frame-gap deadline, inherited from the composite's own
+/// staleness limit (`app::scenes::SOURCE_STALE_AFTER`, 2 s) rather than chosen:
+/// naming a camera unresponsive while its picture is still being composited
+/// would contradict the preview, so this watchdog must never fire first. It is
+/// deliberately not overridable by an environment variable, because the only
+/// thing a tunable floor could do is drift below the limit it exists to respect.
+pub const MIN_FRAME_GAP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Budget for the next frame of a streaming camera. Only ever called for a
+/// device whose format is negotiated, so the rate is the camera's own; a zero
+/// rate is not a format any camera negotiates and the floor covers it as a
+/// backstop, not a policy.
+fn frame_gap_timeout(fps: u32) -> Duration {
+    if fps == 0 {
+        return MIN_FRAME_GAP_TIMEOUT;
+    }
+    (Duration::from_secs(u64::from(FRAME_GAP_INTERVALS)) / fps).max(MIN_FRAME_GAP_TIMEOUT)
+}
+
+/// Wall time since the worker last published a frame, read from the phase clock
+/// that `publish_phase` rewrites for every published frame.
+///
+/// Deliberately not the frame's own capture timestamp. `FrameMetadata::age`
+/// measures on `CLOCK_MONOTONIC`, which on Darwin keeps advancing while the
+/// machine is asleep, while `Instant` (`CLOCK_UPTIME_RAW`) does not: measured
+/// here, the two clocks are ~42 h apart on a laptop that has been suspended
+/// often. A frame timestamped before a lid-close would therefore come back from
+/// wake looking hours old and a perfectly healthy camera would be reported
+/// wedged on the first poll after every sleep. The phase clock spans the same
+/// interval (the worker publishes phase and frame together) and counts only the
+/// time the camera was actually awake to deliver, which is the time being
+/// budgeted. It also covers the one state a timestamp cannot: an `Ok(None)`
+/// read after a real frame, which leaves the slot empty.
+fn frame_gap(progress: WorkerProgress) -> Duration {
+    progress.since.elapsed()
+}
+
+/// How long a streaming worker has gone without a frame once past its deadline.
+/// `None` before the first frame, where the pre-frame watchdog speaks instead,
+/// or while the gap is still within budget.
+fn frame_gap_stall_age(phase: WorkerPhase, gap: Duration, timeout: Duration) -> Option<Duration> {
+    (phase == WorkerPhase::Streaming && gap >= timeout).then_some(gap)
+}
+
+/// Turns a read that hung after frames had already arrived into a real failure,
+/// so a frozen preview stops reporting as healthy.
+fn stalled_frame_error(id: &str, stall: Duration) -> CameraManError {
+    let millis = stall.as_millis();
+    CameraManError::capture_with_kind(
+        CaptureErrorKind::Timeout,
+        format!("camera {id} stopped delivering frames {millis}ms ago"),
+    )
 }
 
 /// Turns a pre-streaming phase that outlived its deadline into a real failure.
@@ -166,7 +231,7 @@ fn stalled_open_error(
         // Already rejected by `open_stall_age`.
         WorkerPhase::Streaming => return None,
         WorkerPhase::AwaitingLease => format!(
-            "camera {id} is still held by an earlier open that did not return after {millis}ms"
+            "camera {id} is still held by an earlier capture that did not return after {millis}ms"
         ),
         WorkerPhase::Opening => format!("opening camera {id} did not return after {millis}ms"),
         WorkerPhase::AwaitingFirstFrame => {
@@ -194,9 +259,12 @@ fn stalled_open_error(
 /// worker releases the device, preventing Stop -> Start reopen races.
 ///
 /// The worker's pre-frame phase (lease wait, open, first read) is published and
-/// bounded by `camera_open_timeout()`. An exceeded deadline is reported here,
+/// bounded by `camera_open_timeout()`. Once the first frame lands, the gap
+/// between published frames is bounded instead by `frame_gap_timeout` derived
+/// from the negotiated rate, so a read that hangs mid-stream is reported rather
+/// than shown as a frozen-but-healthy preview. Either deadline is reported here,
 /// by the reader, because the worker itself is blocked inside the backend; it
-/// is a report, not a cancellation. The abandoned open keeps its camera lease,
+/// is a report, not a cancellation. The abandoned call keeps its camera lease,
 /// so no replacement worker can double-open the device, and that id stays
 /// unavailable until the driver returns. A replacement built through
 /// `reopen_id_with_target` inherits that stall so the lease wait it is left
@@ -354,7 +422,7 @@ impl ThreadedNokhwaFrameSource {
     }
 
     /// Replacement for a camera whose previous worker was already stalled by
-    /// `stalled_open_age`. That worker keeps the camera's lease until the
+    /// `stall_age`. That worker keeps the camera's lease until the
     /// backend returns, so its stall carries into this source's lease wait:
     /// retrying a wedged camera keeps reporting it as unresponsive instead of
     /// showing a fresh warm-up for another full deadline. Acquiring the lease
@@ -413,18 +481,55 @@ impl ThreadedNokhwaFrameSource {
         elapsed
     }
 
-    /// How long this source has been stalled before its first frame, or
-    /// `Duration::ZERO` while it is healthy or still within budget. A
-    /// replacement for the same camera inherits it, because a stalled worker
-    /// holds the camera's lease until the backend returns.
-    pub fn stalled_open_age(&self) -> Duration {
+    fn last_error(&self) -> Option<CameraManError> {
+        self.slots
+            .last_error
+            .lock()
+            .expect("camera error mutex poisoned")
+            .clone()
+    }
+
+    /// How long a streaming worker has gone without a frame past its deadline,
+    /// or `None` where this reader cannot honestly claim that state.
+    ///
+    /// Two gates, both of which the wedge this watchdog exists for passes. A
+    /// published error outranks the watchdog, which only speaks where nothing
+    /// else can: a worker whose read returned an error has already named the
+    /// real failure. And a cleared `negotiated_format` marks a worker that has
+    /// left the read for reconnect backoff, where the phase is still `Streaming`
+    /// and the last frame is still in the slot but the device is closed; that
+    /// window belongs to `retrying`, not to a claim that the device is open and
+    /// negotiated but silent.
+    fn frame_stall_age(&self, progress: WorkerProgress) -> Option<Duration> {
+        let fps = self.negotiated_fps()?;
+        if self.last_error().is_some() {
+            return None;
+        }
+        frame_gap_stall_age(progress.phase, frame_gap(progress), frame_gap_timeout(fps))
+    }
+
+    /// How long this source has been stalled, before its first frame or between
+    /// frames, or `Duration::ZERO` while it is healthy or still within budget. A
+    /// replacement for the same camera inherits it, because a worker parked
+    /// inside the backend keeps the camera's lease until that call returns,
+    /// whether it is parked in `open` or in a read.
+    pub fn stall_age(&self) -> Duration {
         let progress = self.slots.progress();
         open_stall_age(
             progress.phase,
             self.pre_frame_elapsed(progress),
             self.open_timeout,
         )
+        .or_else(|| self.frame_stall_age(progress))
         .unwrap_or(Duration::ZERO)
+    }
+
+    /// True once a streaming worker has passed its frame-gap deadline: the
+    /// device is open and its format negotiated, but no new frame is arriving.
+    /// This is the only wire from a wedged worker to the Stale source row, so a
+    /// wedge the reader reports as an error is also a wedge the row shows.
+    pub fn frame_gap_exceeded(&self) -> bool {
+        self.frame_stall_age(self.slots.progress()).is_some()
     }
 
     /// The camera's real negotiated frame rate, once known. `None` until the
@@ -641,26 +746,28 @@ fn try_acquire_camera_lease(id: &str) -> Option<CameraLease> {
 
 impl FrameSource for ThreadedNokhwaFrameSource {
     fn latest_frame(&mut self) -> Result<Option<CapturedFrame>, CameraManError> {
-        if let Some(error) = self
-            .slots
-            .last_error
-            .lock()
-            .expect("camera error mutex poisoned")
-            .clone()
-        {
+        if let Some(error) = self.last_error() {
             return Err(error);
         }
         // Error first, watchdog second: a concrete failure always outranks the
-        // deadline, which only speaks where nothing else can.
+        // deadline, which only speaks where nothing else can. The two watchdogs
+        // partition `WorkerPhase`, so at most one of them ever answers.
         let progress = self.slots.progress();
         if let Some(error) = stalled_open_error(
             &self.id,
             progress.phase,
             self.pre_frame_elapsed(progress),
             self.open_timeout,
-        ) {
+        )
+        .or_else(|| {
+            self.frame_stall_age(progress)
+                .map(|stall| stalled_frame_error(&self.id, stall))
+        }) {
             return Err(error);
         }
+        // Read after the deadlines: `frame_gap` times the phase clock, not this
+        // slot, so nothing here depends on which frame the two calls see. A
+        // frame landing in between only makes the returned one fresher.
         Ok(self
             .slots
             .latest
@@ -751,6 +858,7 @@ fn nokhwa_error(error: nokhwa::NokhwaError) -> CameraManError {
 mod tests {
     use super::*;
     use crate::camera::SyntheticFrameSource;
+    use crate::media_time::{MonotonicTimestampNanos, monotonic_time_nanos};
     use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc;
 
@@ -929,6 +1037,52 @@ mod tests {
         }
     }
 
+    /// A published frame whose capture timestamp is already `age` old, so a
+    /// freshness test needs no sleep.
+    fn frame_aged(id: &str, sequence: u64, age: Duration) -> CapturedFrame {
+        let frame = Frame::new_checked(2, 2, PixelFormat::Bgra8, vec![0; 16])
+            .expect("a 2x2 BGRA test frame is within every limit");
+        let mut metadata = FrameMetadata::new(id, sequence);
+        metadata.timestamps.monotonic = MonotonicTimestampNanos(
+            monotonic_time_nanos()
+                .saturating_sub(u64::try_from(age.as_nanos()).unwrap_or(u64::MAX)),
+        );
+        CapturedFrame::new(frame, metadata)
+    }
+
+    /// Backdates the phase clock, which is what the frame-gap watchdog measures.
+    fn publish_phase_aged(slots: &CaptureSlots, phase: WorkerPhase, age: Duration) {
+        *slots
+            .progress
+            .lock()
+            .expect("camera progress mutex poisoned") = WorkerProgress {
+            phase,
+            since: Instant::now()
+                .checked_sub(age)
+                .expect("the monotonic clock is past process start"),
+        };
+    }
+
+    /// Slots of a worker that opened at `fps` and last published `frame_age`
+    /// ago, which is the state a mid-stream wedge leaves behind. Both clocks
+    /// carry the age, as a real worker leaves them: it publishes the phase and
+    /// the frame together.
+    fn streaming_slots(id: &str, fps: u32, frame_age: Option<Duration>) -> CaptureSlots {
+        let slots = CaptureSlots::default();
+        *slots
+            .negotiated_format
+            .lock()
+            .expect("camera format mutex poisoned") = Some(VideoFormat { fps, ..TEST_TARGET });
+        publish_phase_aged(
+            &slots,
+            WorkerPhase::Streaming,
+            frame_age.unwrap_or(Duration::ZERO),
+        );
+        *slots.latest.lock().expect("camera frame mutex poisoned") =
+            frame_age.map(|age| frame_aged(id, 7, age));
+        slots
+    }
+
     /// Polls `ready` until it holds or `budget` expires, so a test can observe a
     /// worker's progress without pinning a wall-clock duration to it.
     fn wait_until(budget: Duration, ready: impl Fn() -> bool) -> bool {
@@ -983,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn a_streaming_worker_is_never_reported_as_stalled() {
+    fn a_streaming_worker_is_never_reported_by_the_pre_frame_watchdog() {
         assert!(
             stalled_open_error(
                 "uid:desk",
@@ -993,6 +1147,210 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn each_worker_phase_is_owned_by_exactly_one_watchdog() {
+        for phase in [
+            WorkerPhase::AwaitingLease,
+            WorkerPhase::Opening,
+            WorkerPhase::AwaitingFirstFrame,
+            WorkerPhase::Streaming,
+        ] {
+            let before_first_frame =
+                open_stall_age(phase, Duration::from_secs(600), Duration::from_secs(20)).is_some();
+            let mid_stream =
+                frame_gap_stall_age(phase, Duration::from_secs(600), Duration::from_secs(2))
+                    .is_some();
+            assert!(
+                before_first_frame ^ mid_stream,
+                "{phase:?} must be claimed by exactly one watchdog, not both or neither"
+            );
+        }
+    }
+
+    #[test]
+    fn frame_gap_timeout_scales_with_the_negotiated_frame_rate() {
+        assert_eq!(frame_gap_timeout(30), Duration::from_secs(2));
+        // Faster than the default: the floor keeps the composite's limit.
+        assert_eq!(frame_gap_timeout(60), MIN_FRAME_GAP_TIMEOUT);
+        assert_eq!(frame_gap_timeout(15), Duration::from_secs(4));
+        assert_eq!(frame_gap_timeout(5), Duration::from_secs(12));
+        assert_eq!(frame_gap_timeout(0), MIN_FRAME_GAP_TIMEOUT);
+    }
+
+    #[test]
+    fn a_slow_but_healthy_camera_at_low_fps_is_not_reported_stale() {
+        // Three seconds between frames is fifteen intervals at 5 fps, and past
+        // the floor a flat constant would have used.
+        let slots = streaming_slots("uid:slow", 5, Some(Duration::from_secs(3)));
+        let mut source =
+            ThreadedNokhwaFrameSource::detached("uid:slow", slots, Duration::ZERO, Duration::ZERO);
+
+        assert!(
+            source
+                .latest_frame()
+                .expect("a camera within its own frame interval is healthy")
+                .is_some()
+        );
+        assert!(!source.frame_gap_exceeded());
+        assert_eq!(source.stall_age(), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_read_that_hangs_after_frames_arrived_is_reported_instead_of_repeating_the_last_frame() {
+        let slots = streaming_slots("uid:desk", 30, Some(Duration::from_secs(5)));
+        let mut source =
+            ThreadedNokhwaFrameSource::detached("uid:desk", slots, Duration::ZERO, Duration::ZERO);
+
+        let error = source
+            .latest_frame()
+            .expect_err("a wedged read must not keep handing out the same frame");
+
+        assert_eq!(error.code(), ErrorCode::Capture(CaptureErrorKind::Timeout));
+        let message = error.diagnostic_message();
+        assert!(message.contains("uid:desk"));
+        assert!(message.contains("stopped delivering frames"));
+        assert!(
+            !message.contains("did not return"),
+            "a mid-stream wedge must not borrow the open watchdog's wording: {message}"
+        );
+    }
+
+    #[test]
+    fn a_wedged_read_is_visible_to_the_source_row_not_only_to_the_reader() {
+        // `frame_gap_exceeded` is the only wire from a wedged worker to the
+        // Stale row. Without this the reader could report the failure while the
+        // row went on describing the camera as connected, which is the exact
+        // defect the watchdog exists to remove.
+        let id = "uid:row";
+        let slots = streaming_slots(id, 30, Some(Duration::from_secs(5)));
+        let source =
+            ThreadedNokhwaFrameSource::detached(id, slots.clone(), Duration::ZERO, Duration::ZERO);
+
+        assert!(source.frame_gap_exceeded());
+
+        // The driver returned: the row goes back to describing a live camera.
+        publish_phase_aged(&slots, WorkerPhase::Streaming, Duration::ZERO);
+        *slots.latest.lock().expect("camera frame mutex poisoned") =
+            Some(frame_aged(id, 8, Duration::ZERO));
+
+        assert!(!source.frame_gap_exceeded());
+    }
+
+    #[test]
+    fn a_frame_timestamped_before_a_system_sleep_is_not_a_stall() {
+        // `FrameMetadata::age` measures on CLOCK_MONOTONIC, which keeps running
+        // while a Mac sleeps; `Instant` (CLOCK_UPTIME_RAW) does not. Timing the
+        // gap off the frame's own timestamp would report every lid-open as a
+        // wedged camera, complete with a sticky error and a Retry badge.
+        let id = "uid:woke";
+        let slots = streaming_slots(id, 30, Some(Duration::ZERO));
+        *slots.latest.lock().expect("camera frame mutex poisoned") =
+            Some(frame_aged(id, 7, Duration::from_secs(30 * 60)));
+        let mut source =
+            ThreadedNokhwaFrameSource::detached(id, slots, Duration::ZERO, Duration::ZERO);
+
+        assert!(
+            source
+                .latest_frame()
+                .expect("a worker that just published is delivering, however old the frame reads")
+                .is_some()
+        );
+        assert!(!source.frame_gap_exceeded());
+        assert_eq!(source.stall_age(), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_worker_in_reconnect_backoff_is_not_described_as_open_and_silent() {
+        // Read errors leave the phase on `Streaming` and the last frame in the
+        // slot while the worker retries and then closes the device. Claiming a
+        // stall there would tell the row the device is connected and its format
+        // negotiated, and would hand a replacement an inherited stall against a
+        // predecessor that is about to release the lease on its own.
+        let id = "uid:unplugged";
+        let slots = streaming_slots(id, 30, Some(Duration::from_secs(5)));
+        *slots
+            .last_error
+            .lock()
+            .expect("camera error mutex poisoned") = Some(CameraManError::capture(
+            "read uid:unplugged: device removed",
+        ));
+        let mut source =
+            ThreadedNokhwaFrameSource::detached(id, slots.clone(), Duration::ZERO, Duration::ZERO);
+
+        assert!(!source.frame_gap_exceeded());
+        assert_eq!(source.stall_age(), Duration::ZERO);
+        let error = source
+            .latest_frame()
+            .expect_err("the published error still speaks");
+        assert!(error.diagnostic_message().contains("device removed"));
+
+        // The other gate on its own: backoff clears the negotiated format while
+        // the phase is still `Streaming`, until the next open publishes `Opening`.
+        *slots
+            .last_error
+            .lock()
+            .expect("camera error mutex poisoned") = None;
+        *slots
+            .negotiated_format
+            .lock()
+            .expect("camera format mutex poisoned") = None;
+
+        assert!(!source.frame_gap_exceeded());
+        assert_eq!(source.stall_age(), Duration::ZERO);
+    }
+
+    #[test]
+    fn frames_resuming_clear_a_stall_without_reopening_the_camera() {
+        let id = "uid:resume";
+        let slots = streaming_slots(id, 30, Some(Duration::from_secs(5)));
+        let mut source =
+            ThreadedNokhwaFrameSource::detached(id, slots.clone(), Duration::ZERO, Duration::ZERO);
+        assert!(source.latest_frame().is_err());
+
+        // The driver returned: the worker publishes and rewrites the phase clock.
+        *slots.latest.lock().expect("camera frame mutex poisoned") =
+            Some(frame_aged(id, 8, Duration::ZERO));
+        slots.publish_phase(WorkerPhase::Streaming);
+
+        assert!(source.latest_frame().unwrap().is_some());
+        assert_eq!(source.stall_age(), Duration::ZERO);
+        // Recovery is the same worker resuming, not a reopen: the camera lease
+        // was never taken and is still free.
+        assert!(try_acquire_camera_lease(id).is_some());
+    }
+
+    #[test]
+    fn a_mid_stream_stall_is_inherited_by_a_replacement_like_a_hung_open() {
+        let slots = streaming_slots("uid:desk", 30, Some(Duration::from_secs(5)));
+        let source =
+            ThreadedNokhwaFrameSource::detached("uid:desk", slots, Duration::ZERO, Duration::ZERO);
+
+        // This is the value `retry_real_source` hands to the replacement, which
+        // must not restart a wedged camera's lease wait from zero.
+        assert!(source.stall_age() >= Duration::from_secs(5));
+    }
+
+    #[test]
+    fn an_empty_slot_while_streaming_is_still_watched() {
+        // An `Ok(None)` read after a real frame empties the slot, so there is no
+        // frame left to point at. Silence is still silence.
+        let slots = streaming_slots("uid:desk", 30, None);
+        let mut source = ThreadedNokhwaFrameSource::detached(
+            "uid:desk",
+            slots.clone(),
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        assert!(source.latest_frame().unwrap().is_none());
+
+        publish_phase_aged(&slots, WorkerPhase::Streaming, Duration::from_secs(5));
+
+        let error = source
+            .latest_frame()
+            .expect_err("a streaming worker that publishes nothing is still stalled");
+        assert_eq!(error.code(), ErrorCode::Capture(CaptureErrorKind::Timeout));
     }
 
     #[test]
@@ -1009,7 +1367,7 @@ mod tests {
         assert!(
             error
                 .diagnostic_message()
-                .contains("still held by an earlier open")
+                .contains("still held by an earlier capture")
         );
     }
 
@@ -1103,14 +1461,14 @@ mod tests {
         assert!(
             error
                 .diagnostic_message()
-                .contains("still held by an earlier open")
+                .contains("still held by an earlier capture")
         );
 
         // Acquiring the lease means the earlier open returned: the inherited
         // stall must not follow the worker into its own open call.
         slots.publish_phase(WorkerPhase::Opening);
         assert!(replacement.latest_frame().unwrap().is_none());
-        assert_eq!(replacement.stalled_open_age(), Duration::ZERO);
+        assert_eq!(replacement.stall_age(), Duration::ZERO);
     }
 
     #[test]

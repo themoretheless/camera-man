@@ -133,6 +133,22 @@ impl SourceHealthVector {
         }
     }
 
+    /// A source whose device is open and format negotiated but whose frames
+    /// stopped arriving. `Reconnecting` would be a false claim: the worker is
+    /// parked inside the backend read and can reopen nothing until that call
+    /// returns. Shares `FreshnessHealth::Stale`, and therefore the contract's
+    /// existing Stale row, with `retrying`.
+    pub const fn stalled() -> Self {
+        Self {
+            freshness: FreshnessHealth::Stale,
+            drops: DropHealth::Unknown,
+            jitter: JitterHealth::Unknown,
+            reconnect: ReconnectHealth::Connected,
+            format: FormatHealth::Negotiated,
+            consumer_ack: ConsumerAckHealth::NotRequired,
+        }
+    }
+
     pub const fn missing() -> Self {
         Self {
             freshness: FreshnessHealth::Stale,

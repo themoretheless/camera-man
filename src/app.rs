@@ -316,10 +316,11 @@ pub struct CameraManApp {
     sticky_error: Option<String>,
     capture_error_streak: u32,
     waiting_for_camera: bool,
-    /// A selected camera's open/first-frame watchdog fired. Every surface that
-    /// speaks while no frame is on screen (status line, preview overlay, the
-    /// preview's accessible name) must then say the camera is not responding
-    /// instead of claiming it is still warming up.
+    /// A selected camera's capture watchdog fired: its open, its first frame or
+    /// a mid-stream read stopped returning. Every surface that speaks while no
+    /// frame is on screen (status line, preview overlay, the preview's
+    /// accessible name) must then say the camera is not responding instead of
+    /// claiming it is still warming up.
     camera_not_responding: bool,
     fps_window_start: Instant,
     fps_window_frames: u32,

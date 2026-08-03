@@ -59,15 +59,13 @@ jobs:
           }
 
       - name: Install Rust and pinned release tools
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup default 1.97.1
-          cargo install --locked cargo-deny --version 0.20.2
-          cargo install --locked cargo-audit --version 0.22.2
-          cargo install --locked cargo-auditable --version 0.7.5
-          cargo install --locked cargo-sbom --version 0.10.0
-          cargo install --locked --features cli cargo-about --version 0.9.1
-          cargo install --locked cargo-semver-checks --version 0.48.0
+        uses: themoretheless/.github/.github/actions/setup-rust@eb557370f9aae2547ddbbdce8bf2a8798e68dad2 # v1
+        with:
+          rust-toolchain: 1.97.1
+          tools: cargo-deny@0.20.2,cargo-audit@0.22.2,cargo-auditable@0.7.5,cargo-sbom@0.10.0,cargo-semver-checks@0.48.0
+
+      - name: Install cargo-about with CLI features
+        run: cargo install --locked --features cli cargo-about --version 0.9.1
 
       - name: Create temporary signing keychain
         env:

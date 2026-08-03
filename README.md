@@ -12,7 +12,7 @@ to a Rust CoreMediaIO system extension prototype.
 - Synthetic sources compose into a 1920x1080 output frame; the display preview is independently capped at 960x540 and 30 fps.
 - Real camera discovery and capture use `nokhwa`.
 - AVFoundation cameras persist by their stable `uniqueID` (`uid:<value>`); discovery aliases migrate old numeric selections, scene transforms and active workers without duplicating a device.
-- Camera open negotiates against the requested output geometry and rate for every decodable format before using bounded fallbacks. A hardware smoke on the LG camera selected 1920x1080 at 30 fps instead of the former 320x240 fallback.
+- Camera open negotiates against the requested output geometry and rate for every decodable format before using bounded fallbacks. The recorded LG hardware smoke selects 1920x1080 at 30 fps.
 - Cameras and generated sources can be selected together in one ordered scene.
 - The app can start/stop preview, switch layout, switch fps mode, export PPM, and publish virtual-output frames.
 - Named scenes persist source order, layout, output settings, missing-source policy and typed per-source crop/fit/fill/mirror/rotate/opacity/position transforms.
@@ -57,7 +57,7 @@ to a Rust CoreMediaIO system extension prototype.
 - Parser limits are centralized for scene/preferences JSON, provisioning profiles, frame spools and benchmark reports before unbounded deserialization or allocation.
 - Stable `tracing` spans and native macOS signposts cover capture, compose, publish, consume, pixel-buffer fill, and sample delivery. Bounded diagnostics expose p50/p95/p99/max, typed drop counters, copy/allocation cost per output frame, and a privacy-redacted JSON export.
 - The compositor benchmark covers 720p/1080p, 1/2/4/8 sources, Grid/PiP, nearest/bilinear, and both native ARM64 and Rosetta x86_64. Schema 3 reports retain raw samples, distribution statistics, fixture/order metadata, copy costs and before/after environment snapshots; a Rust runner produces process-level bootstrap intervals and rejects AC baseline work on battery.
-- The old file spool remains available only as an explicit diagnostic fallback.
+- A versioned file spool remains available only as an explicit diagnostic fallback.
 - The extension generates placeholder frames when the app has not published a frame yet.
 - The app can request system-extension activation and show the activation status.
 - The CLI can build `target/CameraMan.app` and embed the `.systemextension`.
@@ -70,7 +70,7 @@ to a Rust CoreMediaIO system extension prototype.
 - The default bundle is ad-hoc signed. It launches, but macOS will not install the system extension from it.
 - Installing the extension requires a provisioning profile that grants `com.apple.developer.system-extension.install`.
 - Signing with an Apple Development certificate alone is not enough; without a matching provisioning profile, macOS kills the app with `No matching profile found`.
-- A distribution build needs host-app and extension-target profiles with one common exact App Group. The bundler validates and embeds all three inputs, but this machine has no paid profiles with which to exercise a real install.
+- A distribution build needs host-app and extension-target profiles with one common exact App Group. The bundler validates and embeds all three inputs; paid-profile install evidence remains an external release gate.
 - The virtual camera declares a 15–60 fps CMIO range; malformed or external transport values are clamped to that contract.
 - Shared memory removes disk I/O and the owned-reader copy, but one measured full-frame mmap publish copy and one pooled Core Video upload copy remain. The Rust IOSurface/Metal bridge and wgpu compositor stay experimental until they reduce that ledger on a real consumer path.
 - Rec.709 attachments are set in the extension, but propagation through third-party camera consumers still needs a real signed-extension install on hardware with paid host/extension profiles.
@@ -329,7 +329,7 @@ An installable signed bundle instead maps the same slot protocol through
 the different user IDs used by the host app and CMIO role process while
 keeping writes in mapped pages rather than rewriting a full frame file.
 
-The previous disk transport is retained only for diagnostics:
+The diagnostic disk transport is selected explicitly:
 
 ```bash
 CAMERAMAN_FRAME_TRANSPORT=file cargo run
@@ -536,7 +536,7 @@ Platform work is isolated:
 - app-to-extension mode selection lives in `transport.rs`;
 - RAM transport facade and its protocol/mmap/writer/reader modules live under `shared_memory_transport`;
 - UI-independent composition and transport publication live in `render_worker.rs`;
-- the old file fallback stays isolated in `frame_transport.rs`;
+- the diagnostic file fallback stays isolated in `frame_transport.rs`;
 - system-extension activation lives in `system_extension.rs`;
 - CoreMediaIO provider code lives under `src/extension/`; `extension_main.rs` is only the platform entry point.
 
@@ -607,80 +607,3 @@ Iteration 3: Virtual output and packaging
 - app and extension bundling;
 - development signing;
 - documented production signing gap.
-
-### Earlier Three-Pass Audit: Items 551-600
-
-This completed milestone was split into three reviewable passes:
-
-- Pass one completed items 551-600: protocol model checking, Kani/Miri/fuzz
-  profiles, cross-process tests, the three-column workspace, scenes,
-  reconnect, accessibility, release security, SBOM and acceptance tooling.
-- Pass two exercised adversarial states and fixed bounded/atomic scene I/O,
-  drag history coalescing, reconnect reset before the first real frame,
-  warmup-aware acceptance accounting, isolated UI fixture storage and a real
-  Setup-window screenshot path.
-- Pass three reviewed the resulting diff, documented every Rust unsafe block,
-  made raw pixel-buffer writers explicitly unsafe, denied future undocumented
-  unsafe blocks, and clamped CoreMedia sample timescales so zero fps cannot
-  cross the FFI boundary.
-
-The final local matrix passes 120 library tests, 46 app tests, 7 extension
-tests, 17 integration/process/property tests and 1 benchmark-runner test
-(191 total). Five Kani
-harnesses and six Miri tests pass; all three fuzz targets completed 2,000-run
-smokes. Four EN/RU, minimum-window, Setup and Retina fixtures pass structural
-and visual review. `cargo-deny`, RustSec, strict Clippy, rustdoc, shell/Python
-syntax, workflow YAML, plist validation and strict bundle signature checks all
-pass. The latest 1080p30/four-source smoke produced 90 complete frames, zero
-torn frames and 5.89 ms p95 end-to-end latency.
-
-`target/CameraMan.app` is therefore buildable and launchable as an arm64 ad-hoc
-bundle. Installing its system extension remains a production-signing task:
-the full eight-hour RSS gate, paid host/extension provisioning profiles,
-notarization credentials and a real third-party consumer cannot be replaced by
-a local ad-hoc run.
-
-### Additional Three-Pass Audit: Items 601-700
-
-- Pass one validated the second 100-repository set, sequential 1-700 numbering,
-  benchmark percentile math and every Rust target/feature. It fixed effective
-  case rotation in schema 2 JSON and incorrect experimental feature names in
-  the benchmark guide.
-- Pass two recomputed all statistics from 9,600 raw samples, checked local
-  document links and reproduced the intentional AC-baseline rejection on
-  Battery Power. Exploratory battery results remain separate from release
-  baselines.
-- Pass three ran strict Clippy/rustdoc, rebuilt and verified the arm64 app and
-  extension, scanned for non-Rust source, and recaptured four Retina UI states.
-  Visual review removed the meaningless collapsible state from Setup and found
-  no text overlap in the workspace, compact Russian, or Setup fixtures.
-
-The second survey resolves all 100 repositories without duplicates, archives,
-or entries below 500 stars. It contributes 1,237,647 stars as a discovery
-signal, not an adoption score; 53 entries are primarily Rust. The complete
-methodology and measured results are in [research.md](research.md),
-[the exploratory battery run](benchmarks/runs/2026-07-18/README.md), and
-[the native AC schema 3 series](benchmarks/runs/2026-07-18-ac-schema3/README.md).
-
-### Benchmark Hardening: Items 611-620
-
-- Iteration one ran the complete CI test profile and all 32 compositor cases.
-  Together with the final runner-contract test it passed 191 tests. Targeted
-  release smokes also validated the shared patterned fixture, padded-row
-  accounting, separate-process acknowledgement, and schema 3 soak report.
-- Iteration two passed `cargo fmt --all --check`, all-targets/all-features
-  Clippy with warnings denied, and rustdoc with warnings denied.
-- Iteration three rebuilt the arm64 app and extension, validated both plist
-  files and the deep strict ad-hoc signature, then recaptured and visually
-  reviewed four 2x EN/RU/default/minimum/Setup UI fixtures.
-- Final review stopped process aggregation from combining different build
-  hashes, compilers, OS versions, iteration policies, or an in-run power-source
-  change. It also moved copy-stage attribution out of generic `FrameView` code
-  so owned mmap materialization cannot count one physical copy twice.
-
-The native AC series completed three randomized processes with 9,600 raw
-samples. All report, summary, baseline-input and executable hashes verify; two
-of three compared cases improved, one showed no significant change, and none
-regressed. The three native M4 Max baselines were updated to process means.
-Physical capture -> CoreVideo -> CoreMediaIO -> third-party-consumer timing
-remains gated on a properly signed and provisioned extension.

@@ -70,7 +70,7 @@ impl CameraDiscovery for NokhwaCameraDiscovery {
     }
 }
 
-pub struct NokhwaFrameSource {
+struct NokhwaFrameSource {
     source_id: String,
     camera: nokhwa::Camera,
     sequence: u64,
@@ -213,19 +213,7 @@ pub struct ThreadedNokhwaFrameSource {
 }
 
 impl NokhwaFrameSource {
-    pub fn open_index(index: u32) -> Result<Self, CameraManError> {
-        Self::open_camera_index(
-            nokhwa::utils::CameraIndex::Index(index),
-            format!("camera-{index}"),
-            VirtualCameraConfig::default().format,
-        )
-    }
-
-    pub fn open_id(id: &str) -> Result<Self, CameraManError> {
-        Self::open_id_with_target(id, VirtualCameraConfig::default().format)
-    }
-
-    pub fn open_id_with_target(id: &str, target: VideoFormat) -> Result<Self, CameraManError> {
+    fn open_id_with_target(id: &str, target: VideoFormat) -> Result<Self, CameraManError> {
         let index = camera_index_from_id(id);
         Self::open_camera_index(index, format!("camera-{id}"), target)
     }
@@ -312,12 +300,7 @@ fn camera_index_from_id(id: &str) -> nokhwa::utils::CameraIndex {
 }
 
 impl NokhwaFrameSource {
-    /// The frame rate actually negotiated with the device at open time, not a guess.
-    pub fn frame_rate(&self) -> u32 {
-        self.camera.frame_rate()
-    }
-
-    pub fn video_format(&self) -> VideoFormat {
+    fn video_format(&self) -> VideoFormat {
         let resolution = self.camera.resolution();
         VideoFormat {
             width: resolution.x(),

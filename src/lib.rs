@@ -53,8 +53,8 @@ pub use atomic_file::replace_file_atomically;
 pub use camera::{CameraDevice, CameraDiscovery, FrameSource, SyntheticFrameSource};
 #[cfg(feature = "camera-capture")]
 pub use capture::{
-    CAMERA_OPEN_TIMEOUT_ENV, NokhwaCameraDiscovery, NokhwaFrameSource, ThreadedNokhwaFrameSource,
-    camera_open_timeout, capture_one_with_timeout,
+    CAMERA_OPEN_TIMEOUT_ENV, NokhwaCameraDiscovery, ThreadedNokhwaFrameSource, camera_open_timeout,
+    capture_one_with_timeout,
 };
 pub use client_authorization::{
     ClientAuthorization, ClientDenialReason, ClientIdentity, authorize_client,

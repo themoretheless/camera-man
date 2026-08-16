@@ -1,13 +1,13 @@
 #![no_main]
 
 use camera_man::{
-    SharedHeaderMetadata, SharedSlotMetadata, checked_mapped_len,
-    validate_shared_header_metadata, validate_shared_slot_metadata,
+    SharedHeaderMetadata, SharedSlotMetadata, checked_mapped_len, validate_shared_header_metadata,
+    validate_shared_slot_metadata,
 };
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {
-    let Some(bytes) = input.get(..76) else {
+    let Some(bytes) = input.get(..80) else {
         return;
     };
     let u32_at = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
@@ -33,8 +33,9 @@ fuzz_target!(|input: &[u8]| {
         height: u32_at(48),
         pixel_format: u32_at(52),
         fps: u32_at(56),
-        generation: u64_at(60),
-        data_len: u64_at(68),
+        color_contract: u32_at(60),
+        generation: u64_at(64),
+        data_len: u64_at(72),
     };
     let _ = validate_shared_slot_metadata(slot, slot_capacity);
 

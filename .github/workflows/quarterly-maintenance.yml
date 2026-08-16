@@ -18,13 +18,18 @@ jobs:
           fetch-depth: 0
 
       - name: Install pinned governance tools
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup default 1.97.1
-          cargo install --locked cargo-audit --version 0.22.2
-          cargo install --locked cargo-deny --version 0.20.2
-          cargo install --locked cargo-hack --version 0.6.45
-          cargo install --locked cargo-outdated --version 0.19.0
+        uses: themoretheless/.github/.github/actions/setup-rust@bb3377f2f424201379ab4e47e147f164f4014b38 # v1
+        with:
+          rust-toolchain: 1.97.1
+          # cargo-outdated is NOT listed here: the shared action forwards
+          # `tools` to taiki-e/install-action with a hardcoded `fallback: none`,
+          # and that action has no manifest for cargo-outdated, so naming it
+          # here aborts the whole quarterly job at the install step.
+          tools: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-hack@0.6.45
+
+      # taiki-e/install-action cannot install cargo-outdated, so build it here.
+      - name: Install cargo-outdated
+        run: cargo install --locked cargo-outdated --version 0.19.0
 
       - name: Advisory, license, source, and future-compatibility gates
         run: |

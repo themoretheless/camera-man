@@ -13,9 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install Rust
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt
-          rustup default 1.97.1
+        uses: themoretheless/.github/.github/actions/setup-rust@bb3377f2f424201379ab4e47e147f164f4014b38 # v1
+        with:
+          rust-toolchain: 1.97.1
+          components: clippy,rustfmt
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -55,13 +56,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install Rust
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup default 1.97.1
-      - name: Install pinned audit tools
-        run: |
-          cargo install --locked cargo-deny --version 0.20.2
-          cargo install --locked cargo-audit --version 0.22.2
+        uses: themoretheless/.github/.github/actions/setup-rust@bb3377f2f424201379ab4e47e147f164f4014b38 # v1
+        with:
+          rust-toolchain: 1.97.1
+          tools: cargo-deny@0.20.2,cargo-audit@0.22.2
       - name: Dependency policy
         run: cargo deny check --hide-inclusion-graph
       - name: RustSec
@@ -79,10 +77,11 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install pinned Rust, target, and cargo-hack
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal --target "${{ matrix.target }}"
-          rustup default 1.97.1
-          cargo install --locked cargo-hack --version 0.6.45
+        uses: themoretheless/.github/.github/actions/setup-rust@bb3377f2f424201379ab4e47e147f164f4014b38 # v1
+        with:
+          rust-toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+          tools: cargo-hack@0.6.45
       - name: Meaningful feature powersets
         run: |
           cargo hack check --locked --target "${{ matrix.target }}" --no-default-features
@@ -95,10 +94,11 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install pinned Rust and coverage tool
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal --component llvm-tools-preview
-          rustup default 1.97.1
-          cargo install --locked cargo-llvm-cov --version 0.8.7
+        uses: themoretheless/.github/.github/actions/setup-rust@bb3377f2f424201379ab4e47e147f164f4014b38 # v1
+        with:
+          rust-toolchain: 1.97.1
+          components: llvm-tools-preview
+          tools: cargo-llvm-cov@0.8.7
       - name: Combine clean library, app, extension, integration, and process coverage
         run: |
           cargo llvm-cov clean --workspace

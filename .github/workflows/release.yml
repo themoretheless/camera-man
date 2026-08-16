@@ -59,15 +59,26 @@ jobs:
           }
 
       - name: Install Rust and pinned release tools
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup default 1.97.1
-          cargo install --locked cargo-deny --version 0.20.2
-          cargo install --locked cargo-audit --version 0.22.2
-          cargo install --locked cargo-auditable --version 0.7.5
-          cargo install --locked cargo-sbom --version 0.10.0
-          cargo install --locked --features cli cargo-about --version 0.9.1
-          cargo install --locked cargo-semver-checks --version 0.48.0
+        uses: themoretheless/.github/.github/actions/setup-rust@bb3377f2f424201379ab4e47e147f164f4014b38 # v1
+        with:
+          rust-toolchain: 1.97.1
+          # cargo-sbom is NOT listed here: the shared action forwards `tools` to
+          # taiki-e/install-action with a hardcoded `fallback: none`, and that
+          # action has no manifest for cargo-sbom, so naming it here aborts the
+          # whole job before signing and notarization ever run.
+          tools: cargo-deny@0.20.2,cargo-audit@0.22.2,cargo-auditable@0.7.5,cargo-semver-checks@0.48.0
+          # This job produces the signed, notarized, attested artifact, so it
+          # must not restore mutable cross-run state: rust-cache also caches
+          # $CARGO_HOME/bin, which is where cargo-auditable (a build tool for
+          # the released binaries) is resolved from.
+          cache: "false"
+
+      # Tools taiki-e/install-action cannot install, so they are built here.
+      - name: Install cargo-about with CLI features
+        run: cargo install --locked --features cli cargo-about --version 0.9.1
+
+      - name: Install cargo-sbom
+        run: cargo install --locked cargo-sbom --version 0.10.0
 
       - name: Create temporary signing keychain
         env:

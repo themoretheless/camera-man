@@ -15,8 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install pinned nightly and cargo-udeps
-        run: |
-          rustup toolchain install nightly-2026-07-17 --profile minimal
-          cargo +nightly-2026-07-17 install --locked cargo-udeps --version 0.1.61
+        uses: themoretheless/.github/.github/actions/setup-rust@bb3377f2f424201379ab4e47e147f164f4014b38 # v1
+        with:
+          rust-toolchain: nightly-2026-07-17
+          tools: cargo-udeps@0.1.61
       - name: Find unused dependencies on the supported udeps toolchain
         run: cargo +nightly-2026-07-17 udeps --locked --all-targets --all-features

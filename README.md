@@ -469,6 +469,7 @@ fuzz/fuzz_targets/      libFuzzer target for frame validation
 tests/golden/           tiny compositor golden images
 tests/contract_invariants.rs executable wire/media/schema/capability contracts
 tests/shared_memory_process.rs crash/restart/truncate/replace/permission faults
+tests/camera_backend_seam.rs a camera backend written against the published API only
 examples/               executable custom source and sink implementations
 .github/workflows/      strict, mutation and notarized production release CI
 docs/ownership-map.md   source-of-truth ownership and newcomer reading route

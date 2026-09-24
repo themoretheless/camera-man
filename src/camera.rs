@@ -59,7 +59,8 @@ pub trait FrameSource {
 /// frames needs neither negotiated format nor lease history, so sources that
 /// cannot answer these questions — a synthetic pattern, a file — stay plain
 /// `FrameSource` values. Implement this to add a camera backend the app can
-/// drive without knowing the backend's type.
+/// drive without knowing the backend's type, as
+/// `tests/camera_backend_seam.rs` does against the published API only.
 pub trait CameraRuntime: FrameSource + Send {
     /// The device's real format, or `None` until the backend has finished
     /// opening it.

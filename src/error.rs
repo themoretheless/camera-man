@@ -425,6 +425,47 @@ mod tests {
     }
 
     #[test]
+    fn every_classifier_row_can_actually_fire() {
+        let rows = CaptureErrorKind::CLASSIFIERS;
+        for (index, (kind, needles)) in rows.iter().enumerate() {
+            for needle in *needles {
+                // Only the message is case-folded, so a needle carrying uppercase
+                // would silently stop matching instead of failing loudly.
+                assert_eq!(
+                    needle.to_ascii_lowercase(),
+                    *needle,
+                    "needle {needle} of {kind:?} does not match its own folded form"
+                );
+                let shadowed = rows[..index]
+                    .iter()
+                    .flat_map(|(_, earlier)| earlier.iter())
+                    .find(|earlier| needle.contains(*earlier));
+                // classify() takes the first row that matches, so a needle already
+                // covered by an earlier row can never be reported by this one.
+                assert!(
+                    shadowed.is_none(),
+                    "needle {needle} of {kind:?} is covered by earlier row needle {shadowed:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn classifier_row_order_decides_a_message_that_matches_two_rows() {
+        let rows = CaptureErrorKind::CLASSIFIERS;
+        for (index, (winner, needles)) in rows.iter().enumerate() {
+            for (loser, loser_needles) in &rows[index + 1..] {
+                let message = format!("{} {}", needles[0], loser_needles[0]);
+                assert_eq!(
+                    CaptureErrorKind::classify(&message),
+                    *winner,
+                    "{message} matches both {winner:?} and {loser:?}, so table order decides"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn structured_code_and_user_message_survive_context() {
         let error = CameraManError::capture_with_kind(
             CaptureErrorKind::PermissionDenied,

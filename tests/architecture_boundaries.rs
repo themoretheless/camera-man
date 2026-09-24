@@ -60,6 +60,17 @@ fn compositor_does_not_know_about_transport_or_ui() {
 }
 
 #[test]
+fn the_pixel_upload_path_shares_the_proven_nearest_sampler() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let upload = fs::read_to_string(root.join("src/extension/pixel_buffer.rs")).unwrap();
+    assert!(
+        upload.contains("nearest_source_coordinate("),
+        "the CoreVideo upload path resamples on its own, outside the bound the \
+         nearest-coordinate proof covers"
+    );
+}
+
+#[test]
 fn background_workers_exchange_messages_without_camera_man_app_access() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for relative_path in [

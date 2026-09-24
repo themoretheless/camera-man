@@ -460,12 +460,28 @@ Open/Closed:
 - Add camera backends by implementing `CameraRuntime`, which extends
   `FrameSource` with the negotiated format, frame rate, stall age and
   frame-gap state the app reads. `CameraManApp` stores these as
-  `Box<dyn CameraRuntime>`, so a second backend needs no change outside the
-  place that constructs it.
-- Add a non-camera input (a file or a pattern) by implementing `FrameSource`
-  alone; it stays out of `CameraRuntime` because it has no device to report on.
+  `Box<dyn CameraRuntime>` and reads only trait methods off them, so a second
+  backend's frames, health and negotiated format need no application change.
+  `tests/camera_backend_seam.rs` writes such a backend from outside the crate,
+  so that half is a compile error when it breaks rather than a claim.
+- The read side is open; enumeration and construction are not, and the
+  difference is worth counting. A non-nokhwa backend also needs
+  `CameraDiscoveryWorker::start` taught where its devices come from
+  (`camera_discovery_worker.rs:32` calls `NokhwaCameraDiscovery` directly),
+  the two construction sites in `app/capture_coordination.rs`, the import in
+  `app.rs` those submodules share, and the one-shot `capture_one_with_timeout`
+  path `main/cli.rs` uses. Five files, so "one new `impl`" describes the read
+  side only. `CameraDiscovery` is published but has no `dyn` user in the crate.
+- `FrameSource` alone is the SDK seam: `PipelineEngine` accepts
+  `Vec<Box<dyn FrameSource>>`, as `examples/custom_source.rs` shows. It is not
+  how the app gains an input — a non-camera app cell is the built-in
+  `SyntheticFrameSource` that `app/capture_coordination.rs:20` constructs per
+  tick, so a file or recorded input is a new source kind in the app, not a new
+  `impl` of `FrameSource`.
 - Add sinks by implementing `VirtualCameraSink`.
-- Add layouts inside `layout.rs` without touching capture.
+- Add layouts in `layout.rs`; capture and the compositor stay untouched. The
+  exhaustive `match` makes the rest loud rather than silent: a new variant also
+  needs its label and picker entry in `app/ui_output.rs`.
 - Add UI views on top of the library types without reaching into FFI.
 - `Compositor` is a concrete type, not a seam: a second composition backend
   needs a deliberate interface decision, not just a new `impl`.

@@ -49,7 +49,7 @@ impl CameraManApp {
                         && self
                             .selected_sources
                             .iter()
-                            .all(|source| source.kind == SourceKind::Synthetic);
+                            .all(|source| source.kind.is_synthetic());
                     let render = ui.add_enabled(
                         can_render,
                         egui::Button::new("↻").min_size(egui::vec2(36.0, 36.0)),

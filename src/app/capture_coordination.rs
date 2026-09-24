@@ -24,7 +24,7 @@ impl CameraManApp {
     pub(super) fn selected_camera_ids(&self) -> Vec<String> {
         self.selected_sources
             .iter()
-            .filter(|source| source.kind == SourceKind::Camera)
+            .filter(|source| source.kind.is_camera())
             .map(|source| source.locator.clone())
             .collect()
     }
@@ -98,7 +98,10 @@ impl CameraManApp {
                 }) {
                     self.real_sources.push((
                         id.clone(),
-                        ThreadedNokhwaFrameSource::open_id_with_target(id, capture_target),
+                        Box::new(ThreadedNokhwaFrameSource::open_id_with_target(
+                            id,
+                            capture_target,
+                        )),
                         0,
                     ));
                 }
@@ -123,7 +126,7 @@ impl CameraManApp {
                 frames.push(None);
                 continue;
             };
-            match source.latest_frame() {
+            match source.as_frame_source().latest_frame() {
                 Ok(frame) => {
                     if *streak > 0 && frame.is_some() {
                         recovered_ids.push(id.clone());
@@ -203,7 +206,7 @@ impl CameraManApp {
             && self
                 .selected_sources
                 .iter()
-                .any(|source| source.kind == SourceKind::Camera && source.locator == id)
+                .any(|source| source.kind.is_camera() && source.locator == id)
         {
             let capture_target = VideoFormat {
                 width: VIRTUAL_CAMERA_WIDTH,
@@ -213,11 +216,11 @@ impl CameraManApp {
             };
             self.real_sources.push((
                 reopen_id.clone(),
-                ThreadedNokhwaFrameSource::reopen_id_with_target(
+                Box::new(ThreadedNokhwaFrameSource::reopen_id_with_target(
                     &reopen_id,
                     capture_target,
                     inherited_stall,
-                ),
+                )),
                 0,
             ));
         }
@@ -340,9 +343,7 @@ fn camera_failure_is_scene_wide(
 ) -> bool {
     camera_frames_received == 0
         && !sources.is_empty()
-        && sources
-            .iter()
-            .all(|source| source.kind == SourceKind::Camera)
+        && sources.iter().all(|source| source.kind.is_camera())
 }
 
 fn remap_camera_aliases(
@@ -351,10 +352,7 @@ fn remap_camera_aliases(
     devices: &[CameraDevice],
 ) -> HashMap<String, String> {
     let mut remapped = HashMap::new();
-    for source in sources
-        .iter_mut()
-        .filter(|source| source.kind == SourceKind::Camera)
-    {
+    for source in sources.iter_mut().filter(|source| source.kind.is_camera()) {
         let Some(current_id) = devices.iter().find_map(|device| {
             device
                 .aliases

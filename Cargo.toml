@@ -23,7 +23,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "camera-man"
 path = "src/main.rs"
-required-features = ["camera-capture"]
+required-features = ["camera-capture", "gui"]
 
 [[bin]]
 name = "cameraman-extension"
@@ -44,8 +44,11 @@ harness = false
 required-features = ["gpu-compositor-experiment"]
 
 [features]
-default = ["camera-capture"]
+default = ["camera-capture", "gui"]
 camera-capture = ["dep:nokhwa"]
+# The hosted GUI toolkit. Only the `camera-man` binary's app module uses it, so
+# a library consumer that never draws a window does not link egui at all.
+gui = ["dep:eframe"]
 parallel-compositor = ["dep:rayon"]
 resize-experiments = ["dep:fast_image_resize"]
 gpu-compositor-experiment = ["dep:pollster", "dep:wgpu"]
@@ -60,7 +63,7 @@ all-experiments = [
 ]
 
 [dependencies]
-eframe = { version = "0.35.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence"] }
+eframe = { version = "0.35.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence"], optional = true }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 libc = "0.2.186"
 nokhwa = { version = "0.10.11", default-features = false, features = ["decoding", "input-native"], optional = true }

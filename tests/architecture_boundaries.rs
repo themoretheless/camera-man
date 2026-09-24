@@ -175,6 +175,51 @@ fn panic_containment_requires_unwinding_profiles() {
     );
 }
 
+#[test]
+fn library_modules_do_not_depend_on_the_hosted_gui() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lib_source = fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    assert!(
+        manifest
+            .lines()
+            .find(|line| line.trim_start().starts_with("eframe = "))
+            .is_some_and(|line| line.contains("optional = true")),
+        "eframe must stay optional so a windowless library consumer does not link it"
+    );
+
+    let mut checked = 0;
+    for module in lib_source
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("pub mod "))
+        .map(|line| line.trim_end().trim_end_matches(';').trim())
+    {
+        let mut files: Vec<String> = Vec::new();
+        let module_file = format!("src/{module}.rs");
+        if root.join(&module_file).is_file() {
+            files.push(module_file);
+        }
+        let module_dir = root.join("src").join(module);
+        if module_dir.is_dir() {
+            collect_rust_sources(&module_dir, root, &mut files);
+        }
+        for relative_path in files {
+            let source = fs::read_to_string(root.join(&relative_path)).unwrap();
+            for forbidden in ["eframe", "egui"] {
+                assert!(
+                    !source.contains(forbidden),
+                    "library module {relative_path} depends on the GUI, which only the app binary may use"
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 40,
+        "expected to cover every library module, saw only {checked} files"
+    );
+}
+
 fn collect_rust_sources(directory: &Path, root: &Path, sources: &mut Vec<String>) {
     for entry in fs::read_dir(directory).unwrap() {
         let path = entry.unwrap().path();

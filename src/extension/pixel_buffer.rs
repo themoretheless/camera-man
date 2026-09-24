@@ -340,14 +340,20 @@ pub(super) unsafe fn fill_from_frame_view(
         return;
     }
     for y in 0..output_height {
-        let source_y = y * source_height / output_height;
+        // The shared nearest sampler proves the row index stays inside the
+        // source, so `row` cannot return `None` here.
+        let source_y =
+            nearest_source_coordinate(y as u32, source_height as u32, output_height as u32)
+                as usize;
         let source_row = frame
             .row(source_y as u32)
             .expect("frame view row was validated");
         // SAFETY: the destination contract covers every output row offset.
         let row = unsafe { base.add(y * bytes_per_row) };
         for x in 0..output_width {
-            let source_x = x * source_width / output_width;
+            let source_x =
+                nearest_source_coordinate(x as u32, source_width as u32, output_width as u32)
+                    as usize;
             let source_offset = source_x * 4;
             let target_offset = x * 4;
             let source_pixel = &source_row[source_offset..source_offset + 4];

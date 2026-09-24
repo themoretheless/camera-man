@@ -1,4 +1,4 @@
-use crate::camera::{CameraDevice, CameraDiscovery, FrameSource};
+use crate::camera::{CameraDevice, CameraDiscovery, CameraRuntime, FrameSource};
 use crate::config::{VideoFormat, VirtualCameraConfig};
 use crate::diagnostics::{PipelineStage, stage_span};
 use crate::error::{CameraManError, CaptureErrorKind};
@@ -507,13 +507,21 @@ impl ThreadedNokhwaFrameSource {
         }
         frame_gap_stall_age(progress.phase, frame_gap(progress), frame_gap_timeout(fps))
     }
+}
 
-    /// How long this source has been stalled, before its first frame or between
-    /// frames, or `Duration::ZERO` while it is healthy or still within budget. A
-    /// replacement for the same camera inherits it, because a worker parked
-    /// inside the backend keeps the camera's lease until that call returns,
-    /// whether it is parked in `open` or in a read.
-    pub fn stall_age(&self) -> Duration {
+impl CameraRuntime for ThreadedNokhwaFrameSource {
+    fn negotiated_format(&self) -> Option<VideoFormat> {
+        *self
+            .slots
+            .negotiated_format
+            .lock()
+            .expect("camera format mutex poisoned")
+    }
+
+    // A replacement for the same camera inherits this, because a worker parked
+    // inside the backend keeps the camera's lease until that call returns,
+    // whether it is parked in `open` or in a read.
+    fn stall_age(&self) -> Duration {
         let progress = self.slots.progress();
         open_stall_age(
             progress.phase,
@@ -524,26 +532,14 @@ impl ThreadedNokhwaFrameSource {
         .unwrap_or(Duration::ZERO)
     }
 
-    /// True once a streaming worker has passed its frame-gap deadline: the
-    /// device is open and its format negotiated, but no new frame is arriving.
-    /// This is the only wire from a wedged worker to the Stale source row, so a
-    /// wedge the reader reports as an error is also a wedge the row shows.
-    pub fn frame_gap_exceeded(&self) -> bool {
+    // This is the only wire from a wedged worker to the Stale source row, so a
+    // wedge the reader reports as an error is also a wedge the row shows.
+    fn frame_gap_exceeded(&self) -> bool {
         self.frame_stall_age(self.slots.progress()).is_some()
     }
 
-    /// The camera's real negotiated frame rate, once known. `None` until the
-    /// worker thread has finished opening the device.
-    pub fn negotiated_fps(&self) -> Option<u32> {
-        self.negotiated_format().map(|format| format.fps)
-    }
-
-    pub fn negotiated_format(&self) -> Option<VideoFormat> {
-        *self
-            .slots
-            .negotiated_format
-            .lock()
-            .expect("camera format mutex poisoned")
+    fn as_frame_source(&mut self) -> &mut dyn FrameSource {
+        self
     }
 }
 

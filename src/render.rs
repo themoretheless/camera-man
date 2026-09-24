@@ -313,12 +313,14 @@ impl SamplingCache {
                 ScalingFilter::Nearest => SamplingMap::Nearest {
                     x_offsets: (0..key.dest_width)
                         .map(|x| {
-                            sample_coordinate(x, key.source_width, key.dest_width) as usize * 4
+                            nearest_source_coordinate(x, key.source_width, key.dest_width) as usize
+                                * 4
                         })
                         .collect(),
                     y_rows: (0..key.dest_height)
                         .map(|y| {
-                            sample_coordinate(y, key.source_height, key.dest_height) as usize
+                            nearest_source_coordinate(y, key.source_height, key.dest_height)
+                                as usize
                                 * key.source_width as usize
                                 * 4
                         })
@@ -350,7 +352,7 @@ impl SamplingCache {
                     x_coordinates: (0..key.dest_width)
                         .map(|x| {
                             let coordinate = key.source_x
-                                + sample_coordinate(x, key.source_width, key.dest_width);
+                                + nearest_source_coordinate(x, key.source_width, key.dest_width);
                             mirrored_coordinate(
                                 coordinate,
                                 display_width,
@@ -361,7 +363,7 @@ impl SamplingCache {
                     y_coordinates: (0..key.dest_height)
                         .map(|y| {
                             let coordinate = key.source_y
-                                + sample_coordinate(y, key.source_height, key.dest_height);
+                                + nearest_source_coordinate(y, key.source_height, key.dest_height);
                             mirrored_coordinate(
                                 coordinate,
                                 display_height,
@@ -685,9 +687,17 @@ fn paste_contract_transformed_generic(
             let source = match scaling_filter {
                 ScalingFilter::Nearest => {
                     let display_x = placement.source_x
-                        + sample_coordinate(x, placement.source_width, placement.dest_width);
+                        + nearest_source_coordinate(
+                            x,
+                            placement.source_width,
+                            placement.dest_width,
+                        );
                     let display_y = placement.source_y
-                        + sample_coordinate(y, placement.source_height, placement.dest_height);
+                        + nearest_source_coordinate(
+                            y,
+                            placement.source_height,
+                            placement.dest_height,
+                        );
                     sample_premultiplied(input, contract, display_x, display_y)
                 }
                 ScalingFilter::Bilinear => {
@@ -1224,7 +1234,11 @@ fn linear_sample(dest: u32, source_size: u32, dest_size: u32) -> LinearSample {
 /// Nearest-neighbor source coordinate for a destination coordinate.
 /// Computed in u64 so `dest * source_size` cannot overflow, and clamped so the
 /// result never reaches `source_size` even with degenerate inputs.
-fn sample_coordinate(dest: u32, source_size: u32, dest_size: u32) -> u32 {
+///
+/// This is the one definition of nearest scaling in the crate: the compositor
+/// and the CoreVideo upload path both go through it, so the bound proven below
+/// covers every producer of output pixels.
+pub fn nearest_source_coordinate(dest: u32, source_size: u32, dest_size: u32) -> u32 {
     let coordinate =
         (u64::from(dest) * u64::from(source_size) / u64::from(dest_size.max(1))) as u32;
     coordinate.min(source_size.saturating_sub(1))
@@ -1240,7 +1254,7 @@ mod kani_proofs {
         let source_size = u32::from(kani::any::<u16>());
         let dest_size = u32::from(kani::any::<u16>());
         kani::assume(source_size > 0 && dest_size > 0 && dest < dest_size);
-        assert!(sample_coordinate(dest, source_size, dest_size) < source_size);
+        assert!(nearest_source_coordinate(dest, source_size, dest_size) < source_size);
     }
 }
 

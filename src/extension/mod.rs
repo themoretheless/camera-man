@@ -14,8 +14,9 @@ use camera_man::{
     VIRTUAL_CAMERA_DEVICE_UID, VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS,
     VIRTUAL_CAMERA_MIN_FPS, VIRTUAL_CAMERA_STREAM_NAME, VIRTUAL_CAMERA_STREAM_UID,
     VIRTUAL_CAMERA_WIDTH, authorize_client, begin_start_reaping_finished_worker, contain_panic,
-    contain_panic_unit, copy_ledger, monotonic_time_nanos, panic_message, record_drop,
-    record_output_frame, report_line, reset_after_contained_panic, stage_span,
+    contain_panic_unit, copy_ledger, monotonic_time_nanos, nearest_source_coordinate,
+    panic_message, record_drop, record_output_frame, report_line, reset_after_contained_panic,
+    stage_span,
 };
 #[cfg(test)]
 use camera_man::{Frame, classify_frame_integrity};

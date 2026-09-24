@@ -19,6 +19,18 @@ impl SourceKind {
             Self::Camera => "camera",
         }
     }
+
+    /// Whether this source occupies a physical device, and so needs opening,
+    /// leasing, reconnecting and a negotiated format to report. Code that asks
+    /// this is code a third kind would have to answer, so the question is named
+    /// once here instead of written as a comparison at each site.
+    pub const fn is_camera(self) -> bool {
+        matches!(self, Self::Camera)
+    }
+
+    pub const fn is_synthetic(self) -> bool {
+        matches!(self, Self::Synthetic)
+    }
 }
 
 /// Persisted identity of one scene source.

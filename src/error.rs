@@ -25,43 +25,85 @@ pub enum CaptureErrorKind {
 }
 
 impl CaptureErrorKind {
+    /// Stable code, user-facing cause and recovery step for this kind, each
+    /// defined once. Row order is the classification priority.
+    pub(crate) const fn profile(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Timeout => (
+                "capture_timeout",
+                "The camera did not respond in time.",
+                "Check the camera connection and retry; export diagnostics if it repeats.",
+            ),
+            Self::DeviceNotFound => (
+                "capture_device_not_found",
+                "The selected camera is no longer available.",
+                Self::RECONNECT,
+            ),
+            Self::Disconnected => (
+                "capture_disconnected",
+                "The camera disconnected or stopped.",
+                Self::RECONNECT,
+            ),
+            Self::PermissionDenied => (
+                "capture_permission_denied",
+                "Camera access was denied. Allow CameraMan in System Settings > Privacy & Security > Camera.",
+                "Open System Settings > Privacy & Security > Camera, allow CameraMan, then retry.",
+            ),
+            Self::DeviceBusy => (
+                "capture_device_busy",
+                "The camera is already in use by another app.",
+                "Close the other app using this camera, then retry.",
+            ),
+            Self::Unsupported => (
+                "capture_unsupported",
+                "This camera operation is not supported.",
+                "Choose a supported camera format or a different source.",
+            ),
+            Self::Other => (
+                "capture_other",
+                "Camera capture failed.",
+                "Retry once, then export diagnostics if the failure repeats.",
+            ),
+        }
+    }
+
+    const RECONNECT: &'static str = "Reconnect the camera, refresh the source list, then retry.";
+
+    const CLASSIFIERS: &'static [(Self, &'static [&'static str])] = &[
+        (Self::Timeout, &["timed out", "timeout"]),
+        (Self::DeviceNotFound, &["not found", "no such device"]),
+        (Self::Disconnected, &["disconnect", "unplug", "stopped"]),
+        (
+            Self::PermissionDenied,
+            &["permission", "denied", "authoriz"],
+        ),
+        (
+            Self::DeviceBusy,
+            &[
+                "busy",
+                "in use",
+                "already open",
+                "already streaming",
+                "already capturing",
+            ],
+        ),
+        (Self::Unsupported, &["not supported", "not implemented"]),
+    ];
+
     /// Heuristic classification from an error message. Case-insensitive
     /// substring matching over vendor error text; treat this as a best
-    /// effort, not a contract. Checks run in the fixed priority order listed
-    /// below (first match wins), so a message that plausibly describes two
-    /// conditions at once is not disambiguated, it is resolved by priority.
+    /// effort, not a contract. See [`Self::CLASSIFIERS`] for the order the
+    /// needles are checked in.
     /// A prior version used a bare "already" keyword for DeviceBusy, which
     /// misclassified messages like "no such device, already removed" as
     /// busy instead of not-found; the phrase is now specific enough to
     /// require an explicit "in use" style qualifier.
     pub fn classify(message: &str) -> Self {
         let lower = message.to_ascii_lowercase();
-        if lower.contains("timed out") || lower.contains("timeout") {
-            Self::Timeout
-        } else if lower.contains("not found") || lower.contains("no such device") {
-            Self::DeviceNotFound
-        } else if lower.contains("disconnect")
-            || lower.contains("unplug")
-            || lower.contains("stopped")
-        {
-            Self::Disconnected
-        } else if lower.contains("permission")
-            || lower.contains("denied")
-            || lower.contains("authoriz")
-        {
-            Self::PermissionDenied
-        } else if lower.contains("busy")
-            || lower.contains("in use")
-            || lower.contains("already open")
-            || lower.contains("already streaming")
-            || lower.contains("already capturing")
-        {
-            Self::DeviceBusy
-        } else if lower.contains("not supported") || lower.contains("not implemented") {
-            Self::Unsupported
-        } else {
-            Self::Other
-        }
+        Self::CLASSIFIERS
+            .iter()
+            .find(|(_, needles)| needles.iter().any(|needle| lower.contains(needle)))
+            .map_or(Self::Other, |(kind, _)| *kind)
     }
 }
 
@@ -84,28 +126,79 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    pub const fn as_str(self) -> &'static str {
+    /// Stable code, user-facing cause and recovery step, each defined once per
+    /// code. Neither half reads the error payload, so the profile is fully
+    /// determined by the code.
+    pub(crate) const fn profile(self) -> (&'static str, &'static str, &'static str) {
         match self {
-            Self::EmptyInput => "empty_input",
-            Self::EmptyFrame => "empty_frame",
-            Self::Capture(CaptureErrorKind::PermissionDenied) => "capture_permission_denied",
-            Self::Capture(CaptureErrorKind::DeviceBusy) => "capture_device_busy",
-            Self::Capture(CaptureErrorKind::DeviceNotFound) => "capture_device_not_found",
-            Self::Capture(CaptureErrorKind::Disconnected) => "capture_disconnected",
-            Self::Capture(CaptureErrorKind::Unsupported) => "capture_unsupported",
-            Self::Capture(CaptureErrorKind::Timeout) => "capture_timeout",
-            Self::Capture(CaptureErrorKind::Other) => "capture_other",
-            Self::InvalidDimensions => "invalid_dimensions",
-            Self::InvalidBufferLength => "invalid_buffer_length",
-            Self::InvalidRowStride => "invalid_row_stride",
-            Self::InvalidMediaContract => "invalid_media_contract",
-            Self::PixelOutOfBounds => "pixel_out_of_bounds",
-            Self::BufferTooLarge => "buffer_too_large",
-            Self::FrameLimitExceeded => "frame_limit_exceeded",
-            Self::Io => "io",
-            Self::UnsupportedPixelFormat => "unsupported_pixel_format",
-            Self::VirtualCameraUnavailable => "virtual_camera_unavailable",
+            Self::EmptyInput => (
+                "empty_input",
+                "No input frames are available.",
+                "Select at least one available source, then retry.",
+            ),
+            Self::EmptyFrame => (
+                "empty_frame",
+                "A camera returned an empty frame.",
+                "Reconnect the source or choose another camera, then retry.",
+            ),
+            Self::Capture(kind) => kind.profile(),
+            Self::InvalidDimensions => (
+                "invalid_dimensions",
+                "A video frame had invalid dimensions.",
+                Self::FRAME_DEFECT,
+            ),
+            Self::InvalidBufferLength => (
+                "invalid_buffer_length",
+                "A video frame contained incomplete pixel data.",
+                Self::FRAME_DEFECT,
+            ),
+            Self::InvalidRowStride => (
+                "invalid_row_stride",
+                "A video frame used an invalid row stride.",
+                Self::FRAME_DEFECT,
+            ),
+            Self::InvalidMediaContract => (
+                "invalid_media_contract",
+                "A video frame used invalid color or geometry metadata.",
+                Self::FRAME_DEFECT,
+            ),
+            Self::PixelOutOfBounds => (
+                "pixel_out_of_bounds",
+                "A pixel operation was outside the video frame.",
+                Self::FRAME_DEFECT,
+            ),
+            Self::UnsupportedPixelFormat => (
+                "unsupported_pixel_format",
+                "The video pixel format is not supported.",
+                Self::FRAME_DEFECT,
+            ),
+            Self::BufferTooLarge => ("buffer_too_large", Self::OVER_BUDGET, Self::SMALLER_SOURCE),
+            Self::FrameLimitExceeded => (
+                "frame_limit_exceeded",
+                Self::OVER_BUDGET,
+                Self::SMALLER_SOURCE,
+            ),
+            Self::Io => (
+                "io",
+                "A file or system operation failed.",
+                "Check the destination, permissions, and free disk space, then retry.",
+            ),
+            Self::VirtualCameraUnavailable => (
+                "virtual_camera_unavailable",
+                "Virtual camera output is unavailable.",
+                "Open Setup, complete extension activation, then run the self-test.",
+            ),
         }
+    }
+
+    const FRAME_DEFECT: &'static str =
+        "Stop output, retry with another source, and export diagnostics if it repeats.";
+    const OVER_BUDGET: &'static str = "A video frame exceeds the configured memory budget.";
+    const SMALLER_SOURCE: &'static str =
+        "Use a smaller source format or reduce the configured frame size.";
+
+    pub const fn as_str(self) -> &'static str {
+        self.profile().0
     }
 }
 
@@ -203,82 +296,13 @@ impl CameraManError {
     }
 
     pub fn user_message(&self) -> &'static str {
-        match self {
-            Self::EmptyInput => "No input frames are available.",
-            Self::EmptyFrame => "A camera returned an empty frame.",
-            Self::Capture { kind, .. } => match kind {
-                CaptureErrorKind::PermissionDenied => {
-                    "Camera access was denied. Allow CameraMan in System Settings > Privacy & Security > Camera."
-                }
-                CaptureErrorKind::DeviceBusy => "The camera is already in use by another app.",
-                CaptureErrorKind::DeviceNotFound => "The selected camera is no longer available.",
-                CaptureErrorKind::Disconnected => "The camera disconnected or stopped.",
-                CaptureErrorKind::Unsupported => "This camera operation is not supported.",
-                CaptureErrorKind::Timeout => "The camera did not respond in time.",
-                CaptureErrorKind::Other => "Camera capture failed.",
-            },
-            Self::InvalidDimensions { .. } => "A video frame had invalid dimensions.",
-            Self::InvalidBufferLength { .. } => "A video frame contained incomplete pixel data.",
-            Self::InvalidRowStride { .. } => "A video frame used an invalid row stride.",
-            Self::InvalidMediaContract(_) => {
-                "A video frame used invalid color or geometry metadata."
-            }
-            Self::PixelOutOfBounds { .. } => "A pixel operation was outside the video frame.",
-            Self::BufferTooLarge { .. } | Self::FrameLimitExceeded { .. } => {
-                "A video frame exceeds the configured memory budget."
-            }
-            Self::Io { .. } => "A file or system operation failed.",
-            Self::UnsupportedPixelFormat => "The video pixel format is not supported.",
-            Self::VirtualCameraUnavailable(_) => "Virtual camera output is unavailable.",
-            Self::Context { source, .. } => source.user_message(),
-        }
+        self.code().profile().1
     }
 
     /// A concrete next step suitable for a status surface. Technical details
     /// remain available through `diagnostic_message` and are not exposed alone.
     pub fn recovery_message(&self) -> &'static str {
-        match self {
-            Self::EmptyInput => "Select at least one available source, then retry.",
-            Self::EmptyFrame => "Reconnect the source or choose another camera, then retry.",
-            Self::Capture { kind, .. } => match kind {
-                CaptureErrorKind::PermissionDenied => {
-                    "Open System Settings > Privacy & Security > Camera, allow CameraMan, then retry."
-                }
-                CaptureErrorKind::DeviceBusy => {
-                    "Close the other app using this camera, then retry."
-                }
-                CaptureErrorKind::DeviceNotFound | CaptureErrorKind::Disconnected => {
-                    "Reconnect the camera, refresh the source list, then retry."
-                }
-                CaptureErrorKind::Unsupported => {
-                    "Choose a supported camera format or a different source."
-                }
-                CaptureErrorKind::Timeout => {
-                    "Check the camera connection and retry; export diagnostics if it repeats."
-                }
-                CaptureErrorKind::Other => {
-                    "Retry once, then export diagnostics if the failure repeats."
-                }
-            },
-            Self::Io { .. } => {
-                "Check the destination, permissions, and free disk space, then retry."
-            }
-            Self::VirtualCameraUnavailable(_) => {
-                "Open Setup, complete extension activation, then run the self-test."
-            }
-            Self::BufferTooLarge { .. } | Self::FrameLimitExceeded { .. } => {
-                "Use a smaller source format or reduce the configured frame size."
-            }
-            Self::Context { source, .. } => source.recovery_message(),
-            Self::InvalidDimensions { .. }
-            | Self::InvalidBufferLength { .. }
-            | Self::InvalidRowStride { .. }
-            | Self::InvalidMediaContract(_)
-            | Self::PixelOutOfBounds { .. }
-            | Self::UnsupportedPixelFormat => {
-                "Stop output, retry with another source, and export diagnostics if it repeats."
-            }
-        }
+        self.code().profile().2
     }
 
     pub fn actionable_message(&self, operation: &str) -> String {

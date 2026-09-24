@@ -14,14 +14,15 @@ use crate::{
 };
 use camera_man::FrameSource;
 use camera_man::{
-    CameraDevice, CaptureErrorKind, CapturedFrame, CompositionLayout, ConsumerProgress,
-    EXTENSION_BUNDLE_ID, ErrorCode, ExtensionActivationStatus, ExtensionInstaller, Frame,
-    FrameMetadata, FrameTransportSink, MissingSourcePolicy, PipelineStage, PixelFormat,
-    ProducerProgress, Rotation, SCENE_PARSER_LIMITS, ScalingFilter, SceneChange, SceneDocument,
-    SourceDescriptor, SourceFit, SourceHealthSummary, SourceHealthVector, SourceKind,
-    SourceTransform, SyntheticFrameSource, ThreadedNokhwaFrameSource, VIRTUAL_CAMERA_DEFAULT_FPS,
-    VIRTUAL_CAMERA_FPS_PRESETS, VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS,
-    VIRTUAL_CAMERA_WIDTH, VideoFormat, camera_open_timeout,
+    CameraDevice, CameraRuntime, CaptureErrorKind, CapturedFrame, CompositionLayout,
+    ConsumerProgress, EXTENSION_BUNDLE_ID, ErrorCode, ExtensionActivationStatus,
+    ExtensionInstaller, Frame, FrameMetadata, FrameTransportSink, MissingSourcePolicy,
+    PipelineStage, PixelFormat, ProducerProgress, Rotation, SCENE_PARSER_LIMITS, ScalingFilter,
+    SceneChange, SceneDocument, SourceDescriptor, SourceFit, SourceHealthSummary,
+    SourceHealthVector, SourceKind, SourceTransform, SyntheticFrameSource,
+    ThreadedNokhwaFrameSource, VIRTUAL_CAMERA_DEFAULT_FPS, VIRTUAL_CAMERA_FPS_PRESETS,
+    VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS, VIRTUAL_CAMERA_WIDTH, VideoFormat,
+    camera_open_timeout,
 };
 use eframe::egui;
 
@@ -285,7 +286,7 @@ pub struct CameraManApp {
     /// `capture_error_streak` (which only ever sees the all-cameras-failing
     /// case). Nothing removes a failing camera automatically; the source keeps
     /// its slot in the scene until the user retries or unchecks it.
-    real_sources: Vec<(String, ThreadedNokhwaFrameSource, u32)>,
+    real_sources: Vec<(String, Box<dyn CameraRuntime>, u32)>,
     extension_installer: ExtensionInstaller,
     extension_status_override: Option<ExtensionActivationStatus>,
     /// Computed once at startup; see `extension_capability()`.
@@ -786,7 +787,7 @@ impl CameraManApp {
         let only_cameras = self
             .selected_sources
             .iter()
-            .all(|source| source.kind == SourceKind::Camera);
+            .all(|source| source.kind.is_camera());
         let every_frame_missing = frames.iter().all(Option::is_none);
         self.waiting_for_camera = self.running && only_cameras && every_frame_missing;
         let prepared = self.prepare_sources(source_ids, frames);

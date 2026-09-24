@@ -457,10 +457,18 @@ Single Responsibility:
 
 Open/Closed:
 
-- Add camera backends by implementing `FrameSource`.
+- Add camera backends by implementing `CameraRuntime`, which extends
+  `FrameSource` with the negotiated format, frame rate, stall age and
+  frame-gap state the app reads. `CameraManApp` stores these as
+  `Box<dyn CameraRuntime>`, so a second backend needs no change outside the
+  place that constructs it.
+- Add a non-camera input (a file or a pattern) by implementing `FrameSource`
+  alone; it stays out of `CameraRuntime` because it has no device to report on.
 - Add sinks by implementing `VirtualCameraSink`.
 - Add layouts inside `layout.rs` without touching capture.
 - Add UI views on top of the library types without reaching into FFI.
+- `Compositor` is a concrete type, not a seam: a second composition backend
+  needs a deliberate interface decision, not just a new `impl`.
 
 Liskov Substitution:
 
@@ -479,7 +487,9 @@ Interface Segregation:
 
 Dependency Inversion:
 
-- High-level pipeline code depends on traits.
+- High-level pipeline code depends on traits: `PipelineEngine` is generic over
+  `FrameSource` and `VirtualCameraSink`, and the app's camera slots are
+  `Box<dyn CameraRuntime>` rather than a concrete capture type.
 - Platform APIs stay in adapters.
 - Tests use pure Rust doubles.
 - The app composes library pieces rather than becoming the core.
@@ -494,9 +504,14 @@ Keep one source of truth for:
 - pixel memory layout: `PixelFormat`;
 - frame validation: `Frame::new_checked`;
 - default memory policy: `FrameLimits` and `CAMERAMAN_MAX_FRAME_BYTES`;
-- machine-readable failure routing: `ErrorCode`;
+- machine-readable failure routing, and the user and recovery text that goes
+  with each code: one `ErrorCode::profile` row per code, one
+  `CaptureErrorKind::profile` row per kind;
 - pipeline phase metrics: `PipelineMetrics`;
 - layout cell math: `GridLayoutCalculator`;
+- nearest-neighbor sampling coordinates, including the bound that keeps the
+  result inside the source: `render::nearest_source_coordinate`, used by both
+  the compositor and the CoreVideo upload path;
 - transport mode selection: `transport.rs`;
 - shared-memory layout and slot state machine: `shared_memory_transport.rs`;
 - fallback file header format: `frame_transport.rs`;

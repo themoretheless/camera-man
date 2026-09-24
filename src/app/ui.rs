@@ -490,9 +490,7 @@ impl CameraManApp {
         let missing_cameras = self
             .selected_sources
             .iter()
-            .filter(|source| {
-                source.kind == SourceKind::Camera && !known.contains(source.locator.as_str())
-            })
+            .filter(|source| source.kind.is_camera() && !known.contains(source.locator.as_str()))
             .cloned()
             .collect::<Vec<_>>();
         for descriptor in missing_cameras {
@@ -652,11 +650,11 @@ impl CameraManApp {
         let has_camera = self
             .selected_sources
             .iter()
-            .any(|source| source.kind == SourceKind::Camera);
+            .any(|source| source.kind.is_camera());
         let has_synthetic = self
             .selected_sources
             .iter()
-            .any(|source| source.kind == SourceKind::Synthetic);
+            .any(|source| source.kind.is_synthetic());
         let mode = match (has_synthetic, has_camera) {
             (true, true) => String::from("MIXED"),
             (false, true) => tr(self.locale, UiText::Real).to_uppercase(),

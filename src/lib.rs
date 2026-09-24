@@ -1,10 +1,13 @@
 //! Pure-Rust frame, composition, pipeline and transport building blocks for
 //! CameraMan.
 //!
-//! The core data flow is `FrameSource -> Compositor -> VirtualCameraSink`.
-//! Platform capture, shared memory and CoreMediaIO integration live behind
-//! those small interfaces. See `examples/custom_source.rs` and
-//! `examples/custom_sink.rs` for minimal implementations.
+//! Frames move `FrameSource -> Compositor -> VirtualCameraSink`. Platform
+//! capture, shared memory and CoreMediaIO integration live behind those small
+//! interfaces: a capture backend adds device state through `CameraRuntime`,
+//! and an output destination implements `VirtualCameraSink`. Composition
+//! itself goes through the concrete `Compositor`, which is not an interface.
+//! See `examples/custom_source.rs` and `examples/custom_sink.rs` for minimal
+//! implementations.
 
 pub mod app_group;
 pub mod atomic_file;
@@ -50,7 +53,7 @@ pub mod wire;
 
 pub use app_group::{APP_GROUP_INFO_KEY, bundled_application_group, shared_frame_file_path};
 pub use atomic_file::replace_file_atomically;
-pub use camera::{CameraDevice, CameraDiscovery, FrameSource, SyntheticFrameSource};
+pub use camera::{CameraDevice, CameraDiscovery, CameraRuntime, FrameSource, SyntheticFrameSource};
 #[cfg(feature = "camera-capture")]
 pub use capture::{
     CAMERA_OPEN_TIMEOUT_ENV, NokhwaCameraDiscovery, ThreadedNokhwaFrameSource, camera_open_timeout,
@@ -125,7 +128,7 @@ pub use quality::{
     QualityConfidenceInterval, QualityGate, QualityMetrics, QualitySummary, compare_frames,
     representative_quality_fixture, summarize_quality,
 };
-pub use render::{Compositor, ScalingFilter};
+pub use render::{Compositor, ScalingFilter, nearest_source_coordinate};
 pub use scene_schema::{
     LegacySceneInputMode, MissingSourcePolicy, SCENE_SCHEMA_VERSION, SceneDocument,
     SceneSchemaError,

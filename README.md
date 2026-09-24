@@ -63,6 +63,7 @@ to a Rust CoreMediaIO system extension prototype.
 - The CLI can build `target/CameraMan.app` and embed the `.systemextension`.
 - Automated suites cover frame/media contracts, migrations, deterministic reducers, architecture boundaries, pooled/borrowed transport behavior, concurrent no-tearing publication, quality gates, CLI packaging contracts, provisioning, and extension lifecycle/timing rules.
 - CI covers meaningful feature powersets on ARM64/x86_64, merged LLVM coverage, focused mutation tests and public-API semver; scheduled maintenance runs pinned `cargo-udeps`, while a quarterly workflow records stale dependencies, duplicates and Rust/objc2/Xcode/macOS SDK drift.
+- Formal proofs run where their cost allows: Loom models are ordinary test targets so every `cargo test` gate executes them, the five Kani harnesses run in `scripts/verify-kani.sh` on a daily schedule, and Miri stays a manual script.
 - Two dated research surveys cover 200 relevant repositories, 40 representative deep reads, primary scientific/platform sources, and 200 research-backed recommendations.
 
 ## Important Limits
@@ -471,7 +472,7 @@ tests/contract_invariants.rs executable wire/media/schema/capability contracts
 tests/shared_memory_process.rs crash/restart/truncate/replace/permission faults
 tests/camera_backend_seam.rs a camera backend written against the published API only
 examples/               executable custom source and sink implementations
-.github/workflows/      strict, mutation and notarized production release CI
+.github/workflows/      strict, mutation, scheduled proof and notarized release CI
 docs/ownership-map.md   source-of-truth ownership and newcomer reading route
 docs/unsafe-invariants.md unsafe boundary-to-oracle registry
 src/lib.rs              public module exports

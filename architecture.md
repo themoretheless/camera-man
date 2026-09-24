@@ -42,7 +42,7 @@ What works:
 - Virtual-camera dimensions and fps bounds/presets are shared across app, transport, config, and extension code.
 - Release signing failures stop bundling with command/status/stderr context; diagnostics remain usable when bundles or profiles are missing.
 - Tests cover domain contracts and migrations, deterministic reducers, dependency direction, pooled/borrowed transport behavior, concurrent no-tearing publication, perceptual quality, CLI packaging contracts, provisioning, and extension lifecycle/timing.
-- Loom, Kani, Miri, structured fuzzing, child-process crash/restart and slow multi-reader tests cover the factored protocol and arithmetic boundaries.
+- Loom, Kani, Miri, structured fuzzing, child-process crash/restart and slow multi-reader tests cover the factored protocol and arithmetic boundaries. Where each one actually runs differs, and only two of the three are enforced: loom tests are ordinary `cargo test` targets so every CI run executes them; the five Kani harnesses run through `scripts/verify-kani.sh` on the daily `proofs` schedule, and `tests/repository_hygiene.rs` fails if a harness is added without being named in that script; `scripts/verify-miri.sh` stays manual, so no gate notices a strict-provenance regression.
 - Release policy includes cargo-deny/RustSec, dual licensing/notices, SPDX 3.0.1, pinned Actions, minimal entitlement allowlists, temporary signing material, notarization/stapling/Gatekeeper and hosted provenance.
 - `research.md` records two 100-repository/primary-literature surveys and maps their findings to recommendations 501-700.
 

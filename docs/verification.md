@@ -7,9 +7,14 @@ macOS FFI is never mistaken for pure-Rust verification.
 - `cargo test --test protocol_loom --no-default-features` explores the atomic
   slot claim/publish/read/release interleavings with Loom.
 - `scripts/verify-kani.sh` proves checked mmap/frame arithmetic, encoded slot
-  ownership and nearest-neighbor coordinate bounds.
+  ownership and nearest-neighbor coordinate bounds. It names each harness
+  explicitly, so a proof added to the tree without also being named there is
+  never run; `tests/repository_hygiene.rs` fails on that, and the script runs in
+  CI on the daily `proofs` schedule.
 - `scripts/verify-miri.sh` executes only protocol layout/metadata and padded
-  frame-view tests under Miri; it does not execute CoreMediaIO or mmap FFI.
+  frame-view tests under Miri; it does not execute CoreMediaIO or mmap FFI, and
+  no workflow runs it, so a strict-provenance regression needs someone to
+  remember to call it.
 - `cargo fuzz run shared_protocol` mutates structured mmap header and slot
   metadata, including version and malformed length fields.
 - `cargo fuzz run provisioning_profile` mutates decoded plist/entitlement data.

@@ -763,15 +763,32 @@ fn paste_opaque_contract(
         TransformedSamplingMap::Bilinear {
             x_samples,
             y_samples,
-        } => paste_transformed_bilinear(
-            output,
-            input,
-            contract,
-            opacity_per_mille,
-            placement,
-            x_samples,
-            y_samples,
-        ),
+        } => {
+            // Decided once per paste. Whether the destination pixel takes part
+            // in the blend cannot change inside the loops, and asking per
+            // channel cost the partial-opacity blend 11% (measured).
+            if opacity_per_mille == TRANSFORM_SCALE {
+                paste_transformed_bilinear::<true>(
+                    output,
+                    input,
+                    contract,
+                    opacity_per_mille,
+                    placement,
+                    x_samples,
+                    y_samples,
+                );
+            } else {
+                paste_transformed_bilinear::<false>(
+                    output,
+                    input,
+                    contract,
+                    opacity_per_mille,
+                    placement,
+                    x_samples,
+                    y_samples,
+                );
+            }
+        }
     }
 }
 
@@ -813,7 +830,7 @@ fn paste_transformed_nearest(
     }
 }
 
-fn paste_transformed_bilinear(
+fn paste_transformed_bilinear<const OPAQUE: bool>(
     output: &mut Frame,
     input: &Frame,
     contract: FrameContract,
@@ -848,8 +865,11 @@ fn paste_transformed_bilinear(
                 let bottom = u64::from(input_data[offsets[2] + channel]) * low_x_weight
                     + u64::from(input_data[offsets[3] + channel]) * u64::from(x_sample.high_weight);
                 let source_weighted = top * low_y_weight + bottom * u64::from(y_sample.high_weight);
-                destination[channel] =
-                    blend_weighted_channel(source_weighted, destination[channel], opacity);
+                destination[channel] = if OPAQUE {
+                    blend_opaque_bilinear_channel(source_weighted)
+                } else {
+                    blend_weighted_channel(source_weighted, destination[channel], opacity)
+                };
             }
             destination[3] = 255;
         }
@@ -890,6 +910,18 @@ fn transformed_source_offset(
         ),
     };
     ((aperture.y as usize + source_y) * input_width + aperture.x as usize + source_x) * 4
+}
+
+/// The fully-opaque bilinear channel blend.
+///
+/// `blend_weighted_channel` at full opacity divides by `BILINEAR_SCALE * 1000`
+/// after multiplying by 1000, and `floor(1000·(w + 2^15) / (1000·2^16))` is
+/// `floor((w + 2^15) / 2^16)` for every `w`, so this shift is exact rather than
+/// approximate; a test checks the two against each other over the whole
+/// reachable range.
+#[inline]
+fn blend_opaque_bilinear_channel(source_weighted: u64) -> u8 {
+    ((source_weighted + 32_768) >> 16) as u8
 }
 
 #[inline]
@@ -1301,6 +1333,32 @@ mod tests {
         assert_eq!(
             frame_as_ascii_ppm(&output),
             include_str!("../tests/golden/compositor-row.ppm")
+        );
+    }
+
+    #[test]
+    fn a_fully_opaque_bilinear_blend_ignores_its_destination() {
+        // The largest weighted sum the inner loop can produce: each axis weights
+        // two 8-bit samples by values that total 256.
+        const MAX_WEIGHTED: u64 = 255 * 256 * 256;
+        for source_weighted in 0..=MAX_WEIGHTED {
+            for destination in [0_u8, 7, 255] {
+                assert_eq!(
+                    blend_opaque_bilinear_channel(source_weighted),
+                    blend_weighted_channel(
+                        source_weighted,
+                        destination,
+                        u64::from(TRANSFORM_SCALE)
+                    ),
+                    "shift path diverged from the division at {source_weighted}"
+                );
+            }
+        }
+        // Half opacity still pulls toward the destination, so the shortcut above
+        // is the only value at which the destination stops mattering.
+        assert_ne!(
+            blend_weighted_channel(4_000_000, 0, 500),
+            blend_weighted_channel(4_000_000, 255, 500)
         );
     }
 

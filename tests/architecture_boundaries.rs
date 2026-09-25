@@ -70,6 +70,39 @@ fn the_pixel_upload_path_shares_the_proven_nearest_sampler() {
     );
 }
 
+/// `src/capture.rs` is the only module allowed to name the camera library.
+/// Handing out `capture::NokhwaCameraDiscovery` stays fine on purpose: that is
+/// this crate's own type, so a caller of it cannot tell which library sits
+/// behind the seam.
+#[test]
+fn only_the_capture_module_reaches_the_camera_library() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources = Vec::new();
+    collect_rust_sources(&root.join("src"), root, &mut sources);
+    let mut checked = 0;
+    for relative_path in sources {
+        if relative_path == "src/capture.rs" {
+            continue;
+        }
+        let source = fs::read_to_string(root.join(&relative_path)).unwrap();
+        checked += 1;
+        for line in source.lines() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !code.contains("nokhwa::") && !code.starts_with("use nokhwa"),
+                "the camera library leaked past src/capture.rs into {relative_path}: {code}"
+            );
+        }
+    }
+    assert!(
+        checked > 40,
+        "the camera-library scan stopped covering most of src: {checked} files"
+    );
+}
+
 #[test]
 fn background_workers_exchange_messages_without_camera_man_app_access() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

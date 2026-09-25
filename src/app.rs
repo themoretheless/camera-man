@@ -243,6 +243,17 @@ impl AppLaunchContext {
     }
 }
 
+/// How the composited output is built: which grid, which resampler, which
+/// target rate, and what a missing source means. The scene snapshot, the output
+/// panel and every render job read all four together, so they travel together.
+#[derive(Debug, Clone, Copy)]
+struct OutputSettings {
+    fps_mode: FpsMode,
+    layout: CompositionLayout,
+    scaling_filter: ScalingFilter,
+    missing_source_policy: MissingSourcePolicy,
+}
+
 /// Scene editing state: the name field, the undo/redo history and the baseline
 /// held across one pointer gesture, and the file the scene panel reads and
 /// writes. It sits here rather than in `scenes.rs` so that `ui_scene.rs` can
@@ -269,7 +280,6 @@ pub struct CameraManApp {
     announce_discovery_result: bool,
     selected_source_id: Option<String>,
     source_transforms: BTreeMap<String, SourceTransform>,
-    missing_source_policy: MissingSourcePolicy,
     last_good_frames: HashMap<String, (CapturedFrame, Instant)>,
     scenes: Vec<SceneDocument>,
     active_scene_name: Option<String>,
@@ -305,14 +315,12 @@ pub struct CameraManApp {
     signing_team_identifier: Option<String>,
     extension_profile_present: bool,
     provisioning_profile_status: ProvisioningProfileStatus,
-    fps_mode: FpsMode,
+    output: OutputSettings,
     /// The fps actually in effect right now: either the fixed choice, or (in
     /// Auto) the capped max negotiated across open real cameras / the shared
     /// virtual-camera default.
     /// Recomputed at the top of every `request_render` call.
     active_fps: u32,
-    layout: CompositionLayout,
-    scaling_filter: ScalingFilter,
     media_clock: MediaClock,
     render_worker: RenderWorker,
     /// Invalidates a completed frame when source/layout state changed while
@@ -442,7 +450,6 @@ impl CameraManApp {
             announce_discovery_result: false,
             selected_source_id,
             source_transforms: preferences.source_transforms,
-            missing_source_policy: preferences.missing_source_policy,
             last_good_frames: HashMap::new(),
             scenes: preferences.scenes,
             active_scene_name: preferences.active_scene_name,
@@ -472,10 +479,13 @@ impl CameraManApp {
             signing_team_identifier,
             extension_profile_present,
             provisioning_profile_status: provisioning_profile_status(),
-            fps_mode: preferences.fps_mode,
+            output: OutputSettings {
+                fps_mode: preferences.fps_mode,
+                layout: preferences.layout,
+                scaling_filter: preferences.scaling_filter,
+                missing_source_policy: preferences.missing_source_policy,
+            },
             active_fps: VIRTUAL_CAMERA_DEFAULT_FPS,
-            layout: preferences.layout,
-            scaling_filter: preferences.scaling_filter,
             media_clock,
             render_worker,
             render_epoch: 0,
@@ -588,15 +598,15 @@ impl CameraManApp {
             legacy_input_mode: Default::default(),
             legacy_selected_synthetic_ids: Vec::new(),
             legacy_selected_real_ids: Vec::new(),
-            layout: self.layout,
-            scaling_filter: self.scaling_filter,
-            fps_mode: self.fps_mode,
+            layout: self.output.layout,
+            scaling_filter: self.output.scaling_filter,
+            fps_mode: self.output.fps_mode,
             virtual_output_enabled: self.virtual_output_enabled,
             export_path: self.export_path.clone(),
             locale: self.locale,
             high_contrast: self.high_contrast,
             source_transforms: self.source_transforms.clone(),
-            missing_source_policy: self.missing_source_policy,
+            missing_source_policy: self.output.missing_source_policy,
             scenes: self.scenes.clone(),
             active_scene_name: self.active_scene_name.clone(),
         }
@@ -723,7 +733,7 @@ impl CameraManApp {
     /// The render worker receives the format with each latest-only job, so
     /// changing this value requires no synchronous renderer or sink work.
     fn recompute_active_fps(&mut self) {
-        let fps = match self.fps_mode {
+        let fps = match self.output.fps_mode {
             FpsMode::Fixed(fps) => fps,
             FpsMode::Auto => self
                 .real_sources
@@ -744,7 +754,7 @@ impl CameraManApp {
     }
 
     fn fixed_fps_warning(&self) -> Option<String> {
-        let FpsMode::Fixed(target_fps) = self.fps_mode else {
+        let FpsMode::Fixed(target_fps) = self.output.fps_mode else {
             return None;
         };
         let slowest_camera_fps = self
@@ -822,9 +832,9 @@ impl CameraManApp {
         let publish_virtual = live && self.virtual_output_enabled && !prepared.suppress_output;
         let fingerprint = RenderFingerprint::new(
             &frames,
-            self.layout,
+            self.output.layout,
             format,
-            self.scaling_filter,
+            self.output.scaling_filter,
             prepared.transforms.clone(),
             publish_virtual,
         );
@@ -835,14 +845,14 @@ impl CameraManApp {
         self.render_worker.submit(
             RenderJob::new(
                 frames,
-                self.layout,
+                self.output.layout,
                 format,
                 self.render_epoch,
                 live,
                 publish_virtual,
                 force_preview,
             )
-            .with_scaling_filter(self.scaling_filter)
+            .with_scaling_filter(self.output.scaling_filter)
             .with_source_transforms(prepared.transforms)
             .with_preview_size(preview_due.then_some((PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT))),
         );

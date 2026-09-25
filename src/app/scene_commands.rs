@@ -82,13 +82,17 @@ impl CameraManApp {
                     true
                 }
             }
-            SceneEditCommand::SetLayout(layout) => replace_if_changed(&mut self.layout, layout),
-            SceneEditCommand::SetScalingFilter(filter) => {
-                replace_if_changed(&mut self.scaling_filter, filter)
+            SceneEditCommand::SetLayout(layout) => {
+                replace_if_changed(&mut self.output.layout, layout)
             }
-            SceneEditCommand::SetFrameRate(mode) => replace_if_changed(&mut self.fps_mode, mode),
+            SceneEditCommand::SetScalingFilter(filter) => {
+                replace_if_changed(&mut self.output.scaling_filter, filter)
+            }
+            SceneEditCommand::SetFrameRate(mode) => {
+                replace_if_changed(&mut self.output.fps_mode, mode)
+            }
             SceneEditCommand::SetMissingSourcePolicy(policy) => {
-                replace_if_changed(&mut self.missing_source_policy, policy)
+                replace_if_changed(&mut self.output.missing_source_policy, policy)
             }
         };
         changed.then_some(invalidation)

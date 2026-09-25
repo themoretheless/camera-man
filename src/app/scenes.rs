@@ -28,11 +28,11 @@ impl CameraManApp {
     pub(super) fn scene_snapshot(&self) -> SceneSnapshot {
         SceneSnapshot {
             sources: self.selected_sources.clone(),
-            layout: self.layout,
-            scaling_filter: self.scaling_filter,
-            fps_mode: self.fps_mode,
+            layout: self.output.layout,
+            scaling_filter: self.output.scaling_filter,
+            fps_mode: self.output.fps_mode,
             source_transforms: self.source_transforms.clone(),
-            missing_source_policy: self.missing_source_policy,
+            missing_source_policy: self.output.missing_source_policy,
             active_scene_name: self.active_scene_name.clone(),
         }
     }
@@ -119,11 +119,11 @@ impl CameraManApp {
             .ok_or_else(|| String::from("scene no longer exists"))?;
         scene.to_json_pretty().map_err(|error| error.to_string())?;
         self.selected_sources = scene.sources.clone();
-        self.layout = scene.layout;
-        self.scaling_filter = scene.scaling_filter;
+        self.output.layout = scene.layout;
+        self.output.scaling_filter = scene.scaling_filter;
         self.source_transforms = scene.source_transforms.clone();
-        self.missing_source_policy = scene.missing_source_policy;
-        self.fps_mode = scene.output_fps.map_or(FpsMode::Auto, FpsMode::Fixed);
+        self.output.missing_source_policy = scene.missing_source_policy;
+        self.output.fps_mode = scene.output_fps.map_or(FpsMode::Auto, FpsMode::Fixed);
         self.active_scene_name = Some(scene.name.clone());
         self.scene_editing.scene_name_input = scene.name;
         self.selected_source_id = self.selected_source_ids().into_iter().next();
@@ -190,7 +190,7 @@ impl CameraManApp {
                 missing += 1;
             }
 
-            let resolved = match self.missing_source_policy {
+            let resolved = match self.output.missing_source_policy {
                 MissingSourcePolicy::FreezeBriefly if fresh.is_none() => self
                     .last_good_frames
                     .get(&source_id)
@@ -201,7 +201,9 @@ impl CameraManApp {
                 _ => fresh,
             };
 
-            if self.missing_source_policy == MissingSourcePolicy::HideCell && resolved.is_none() {
+            if self.output.missing_source_policy == MissingSourcePolicy::HideCell
+                && resolved.is_none()
+            {
                 continue;
             }
             prepared_frames.push(resolved);
@@ -220,7 +222,7 @@ impl CameraManApp {
             frames: prepared_frames,
             transforms,
             suppress_output: missing > 0
-                && self.missing_source_policy == MissingSourcePolicy::StopOutput,
+                && self.output.missing_source_policy == MissingSourcePolicy::StopOutput,
         }
     }
 
@@ -239,11 +241,11 @@ impl CameraManApp {
         SceneDocument::new(
             name,
             self.selected_sources.clone(),
-            self.layout,
-            self.scaling_filter,
+            self.output.layout,
+            self.output.scaling_filter,
             source_transforms,
-            self.missing_source_policy,
-            match self.fps_mode {
+            self.output.missing_source_policy,
+            match self.output.fps_mode {
                 FpsMode::Auto => None,
                 FpsMode::Fixed(fps) => Some(fps),
             },
@@ -252,11 +254,11 @@ impl CameraManApp {
 
     fn restore_scene_snapshot(&mut self, snapshot: SceneSnapshot) {
         self.selected_sources = snapshot.sources;
-        self.layout = snapshot.layout;
-        self.scaling_filter = snapshot.scaling_filter;
-        self.fps_mode = snapshot.fps_mode;
+        self.output.layout = snapshot.layout;
+        self.output.scaling_filter = snapshot.scaling_filter;
+        self.output.fps_mode = snapshot.fps_mode;
         self.source_transforms = snapshot.source_transforms;
-        self.missing_source_policy = snapshot.missing_source_policy;
+        self.output.missing_source_policy = snapshot.missing_source_policy;
         self.active_scene_name = snapshot.active_scene_name;
         self.selected_source_id = self.selected_source_ids().into_iter().next();
     }

@@ -69,7 +69,7 @@ impl CameraManApp {
 
                 ui.add_space(14.0);
                 ui.label(tr(self.locale, UiText::TargetFps));
-                let mut fps_mode = self.fps_mode;
+                let mut fps_mode = self.output.fps_mode;
                 ui.horizontal_wrapped(|ui| {
                     ui.selectable_value(
                         &mut fps_mode,
@@ -95,7 +95,7 @@ impl CameraManApp {
 
                 ui.add_space(14.0);
                 ui.label(tr(self.locale, UiText::Layout));
-                let mut selected_layout = self.layout;
+                let mut selected_layout = self.output.layout;
                 egui::ComboBox::from_id_salt("output-layout")
                     .selected_text(layout_label(self.locale, selected_layout))
                     .width(ui.available_width())
@@ -121,7 +121,7 @@ impl CameraManApp {
 
                 ui.add_space(10.0);
                 ui.label(tr(self.locale, UiText::Scaling));
-                let mut scaling_filter = self.scaling_filter;
+                let mut scaling_filter = self.output.scaling_filter;
                 ui.horizontal(|ui| {
                     ui.selectable_value(
                         &mut scaling_filter,
@@ -142,7 +142,7 @@ impl CameraManApp {
 
                 ui.add_space(10.0);
                 ui.label(tr(self.locale, UiText::MissingPolicy));
-                let mut missing_source_policy = self.missing_source_policy;
+                let mut missing_source_policy = self.output.missing_source_policy;
                 egui::ComboBox::from_id_salt("missing-source-policy")
                     .selected_text(missing_policy_label(self.locale, missing_source_policy))
                     .width(ui.available_width())

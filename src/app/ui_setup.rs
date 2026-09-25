@@ -348,6 +348,55 @@ impl CameraManApp {
             "https://github.com/themoretheless/camera-man#troubleshooting-no-matching-profile-found",
         );
     }
+    pub(super) fn configure_ui_fixture_state(&mut self, state: UiFixtureState) {
+        match state {
+            UiFixtureState::Workspace => {}
+            UiFixtureState::Setup => self.show_setup = true,
+            UiFixtureState::Empty => {
+                self.selected_sources.clear();
+                self.selected_source_id = None;
+                self.preview = None;
+                self.preview_texture = None;
+            }
+            UiFixtureState::Mixed => {
+                let camera_id = String::from("fixture-camera");
+                self.real_devices = vec![CameraDevice::new(camera_id.clone(), "Studio Camera")];
+                let synthetic = SourceDescriptor::synthetic("desk");
+                let camera = SourceDescriptor::camera(camera_id);
+                self.selected_source_id = Some(synthetic.stable_key());
+                self.selected_sources = vec![synthetic, camera];
+                self.running = false;
+                self.waiting_for_camera = false;
+            }
+            UiFixtureState::Disconnected => {
+                let id = String::from("fixture-camera");
+                self.real_devices = vec![CameraDevice::new(id.clone(), "Studio Camera")];
+                let descriptor = SourceDescriptor::camera(id);
+                self.selected_source_id = Some(descriptor.stable_key());
+                self.selected_sources = vec![descriptor];
+                self.running = true;
+                self.waiting_for_camera = true;
+                self.sticky_error = Some(String::from(
+                    "Camera disconnected. Reconnect it, refresh cameras, then retry.",
+                ));
+            }
+            UiFixtureState::InstallError => {
+                self.show_setup = true;
+                self.extension_capable = true;
+                self.extension_capability_reason = None;
+                self.extension_status_override = Some(ExtensionActivationStatus::Failed(
+                    String::from("The embedded extension signature could not be verified"),
+                ));
+                self.sticky_error = Some(String::from(
+                    "Extension installation failed. Review signing details, rebuild the signed bundle, then retry activation.",
+                ));
+            }
+            UiFixtureState::Running => {
+                self.running = true;
+                self.waiting_for_camera = false;
+            }
+        }
+    }
 }
 
 fn launch_context_label(locale: UiLocale, context: AppLaunchContext) -> &'static str {

@@ -36,6 +36,7 @@ mod localization;
 mod scene_commands;
 mod scenes;
 mod self_test;
+mod status_line;
 mod ui;
 mod ui_contracts;
 mod ui_output;
@@ -884,35 +885,6 @@ impl CameraManApp {
             self.measured_fps = self.fps_window_frames as f32 / elapsed.as_secs_f32();
             self.fps_window_start = Instant::now();
             self.fps_window_frames = 0;
-        }
-    }
-
-    /// The always-derivable state line for the status bar (left side).
-    fn state_line(&self) -> (egui::Color32, String) {
-        if let Some(error) = &self.sticky_error {
-            return (COLOR_ERROR, error.clone());
-        }
-        if let Some(notice) = self.notice.as_ref().filter(|notice| notice.is_visible()) {
-            return (COLOR_OK, notice.text.clone());
-        }
-        if self.running {
-            if self.waiting_for_camera {
-                // The status line, the preview overlay and the preview's
-                // accessible name all derive their wording from one decision,
-                // so a not-responding camera cannot be announced as a warm-up
-                // on any of them.
-                let (headline, _) = ui::waiting_overlay_text(
-                    self.camera_not_responding,
-                    self.fixture_state == Some(UiFixtureState::Disconnected),
-                );
-                (COLOR_WARNING, tr(self.locale, headline).to_owned())
-            } else {
-                (COLOR_OK, tr(self.locale, UiText::PreviewRunning).to_owned())
-            }
-        } else if self.preview.is_some() {
-            (COLOR_DIM, tr(self.locale, UiText::Paused).to_owned())
-        } else {
-            (COLOR_DIM, tr(self.locale, UiText::Ready).to_owned())
         }
     }
 }

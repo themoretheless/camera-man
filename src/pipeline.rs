@@ -74,7 +74,16 @@ pub struct RunSummary {
     pub metrics: PipelineMetrics,
 }
 
-/// Synchronous trait-driven source-compose-sink pipeline.
+/// The reference composition loop: sources, [`Compositor`], sink, one tick at a
+/// time, with no thread of its own. Its consumers are the tests below and
+/// `examples/pipeline_demo.rs`; the product path is the app's own
+/// `render_worker` module (compiled into the binary, not into this library),
+/// which pulls on separate capture threads and recycles output frames. The two
+/// deliberately account for drops at different points: this loop records
+/// [`DropReason::Stale`] where it reads a source, while the product path
+/// reports staleness on the consumer side in `src/extension/`. Do not fold them
+/// together — the difference is what makes this loop usable as a synchronous
+/// oracle.
 pub struct PipelineEngine<Sink: VirtualCameraSink> {
     compositor: Compositor,
     sources: Vec<Box<dyn FrameSource>>,

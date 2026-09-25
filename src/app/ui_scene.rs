@@ -34,8 +34,11 @@ impl CameraManApp {
             }
         }
 
-        ui.add(egui::TextEdit::singleline(&mut self.scene_name_input).desired_width(f32::INFINITY))
-            .on_hover_text(tr(self.locale, UiText::NamedScene));
+        ui.add(
+            egui::TextEdit::singleline(&mut self.scene_editing.scene_name_input)
+                .desired_width(f32::INFINITY),
+        )
+        .on_hover_text(tr(self.locale, UiText::NamedScene));
         if ui
             .add_sized(
                 [ui.available_width(), 28.0],
@@ -52,7 +55,7 @@ impl CameraManApp {
             let undo_label = tr(self.locale, UiText::Undo);
             let undo = ui
                 .add_enabled(
-                    !self.undo_stack.is_empty(),
+                    !self.scene_editing.undo_stack.is_empty(),
                     egui::Button::new("↶").min_size(egui::vec2(36.0, 28.0)),
                 )
                 .on_hover_text(format!("{undo_label} (Command-Z)"));
@@ -65,7 +68,7 @@ impl CameraManApp {
             let redo_label = tr(self.locale, UiText::Redo);
             let redo = ui
                 .add_enabled(
-                    !self.redo_stack.is_empty(),
+                    !self.scene_editing.redo_stack.is_empty(),
                     egui::Button::new("↷").min_size(egui::vec2(36.0, 28.0)),
                 )
                 .on_hover_text(format!("{redo_label} (Command-Shift-Z)"));
@@ -191,7 +194,7 @@ impl CameraManApp {
 
     pub(super) fn scene_file_ui(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.label(tr(self.locale, UiText::SceneFile));
-        let mut scene_path = self.scene_path.to_string_lossy().into_owned();
+        let mut scene_path = self.scene_editing.scene_path.to_string_lossy().into_owned();
         if ui
             .add(
                 egui::TextEdit::singleline(&mut scene_path)
@@ -200,8 +203,8 @@ impl CameraManApp {
             )
             .changed()
         {
-            self.scene_path = PathBuf::from(scene_path);
-            self.import_preview = None;
+            self.scene_editing.scene_path = PathBuf::from(scene_path);
+            self.scene_editing.import_preview = None;
         }
         ui.horizontal(|ui| {
             if ui
@@ -229,7 +232,7 @@ impl CameraManApp {
                 }
             }
         });
-        if let Some(scene) = &self.import_preview {
+        if let Some(scene) = &self.scene_editing.import_preview {
             ui.label(
                 egui::RichText::new(format!(
                     "{} · {} source(s) · schema {}",

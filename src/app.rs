@@ -243,6 +243,21 @@ impl AppLaunchContext {
     }
 }
 
+/// Scene editing state: the name field, the undo/redo history and the baseline
+/// held across one pointer gesture, and the file the scene panel reads and
+/// writes. It sits here rather than in `scenes.rs` so that `ui_scene.rs` can
+/// reach its fields.
+#[derive(Default)]
+struct SceneEditing {
+    scene_name_input: String,
+    undo_stack: Vec<SceneSnapshot>,
+    redo_stack: Vec<SceneSnapshot>,
+    pending_scene_edit: Option<SceneSnapshot>,
+    skip_history_commit: bool,
+    scene_path: PathBuf,
+    import_preview: Option<SceneDocument>,
+}
+
 /// UI-thread-owned runtime coordinator. Workers receive typed jobs and return
 /// typed snapshots; they never borrow this aggregate.
 pub struct CameraManApp {
@@ -258,13 +273,7 @@ pub struct CameraManApp {
     last_good_frames: HashMap<String, (CapturedFrame, Instant)>,
     scenes: Vec<SceneDocument>,
     active_scene_name: Option<String>,
-    scene_name_input: String,
-    undo_stack: Vec<SceneSnapshot>,
-    redo_stack: Vec<SceneSnapshot>,
-    pending_scene_edit: Option<SceneSnapshot>,
-    skip_history_commit: bool,
-    scene_path: PathBuf,
-    import_preview: Option<SceneDocument>,
+    scene_editing: SceneEditing,
     locale: UiLocale,
     high_contrast: bool,
     system_increase_contrast: bool,
@@ -437,13 +446,11 @@ impl CameraManApp {
             last_good_frames: HashMap::new(),
             scenes: preferences.scenes,
             active_scene_name: preferences.active_scene_name,
-            scene_name_input,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            pending_scene_edit: None,
-            skip_history_commit: false,
-            scene_path: PathBuf::from(DEFAULT_SCENE_PATH),
-            import_preview: None,
+            scene_editing: SceneEditing {
+                scene_name_input,
+                scene_path: PathBuf::from(DEFAULT_SCENE_PATH),
+                ..Default::default()
+            },
             locale: preferences.locale,
             high_contrast: preferences.high_contrast,
             system_increase_contrast: accessibility.increase_contrast,

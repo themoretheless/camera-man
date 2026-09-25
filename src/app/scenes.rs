@@ -38,7 +38,7 @@ impl CameraManApp {
     }
 
     pub(super) fn commit_scene_history(&mut self, before: SceneSnapshot) {
-        if std::mem::take(&mut self.skip_history_commit) {
+        if std::mem::take(&mut self.scene_editing.skip_history_commit) {
             return;
         }
         let mut after = self.scene_snapshot();
@@ -49,14 +49,14 @@ impl CameraManApp {
             self.active_scene_name = None;
             after.active_scene_name = None;
         }
-        push_bounded(&mut self.undo_stack, before);
-        self.redo_stack.clear();
+        push_bounded(&mut self.scene_editing.undo_stack, before);
+        self.scene_editing.redo_stack.clear();
     }
 
     pub(super) fn finish_scene_history(&mut self, before: SceneSnapshot, pointer_down: bool) {
         let changed = !before.same_scene_content(&self.scene_snapshot());
         if let Some(baseline) = history_baseline_after_pointer(
-            &mut self.pending_scene_edit,
+            &mut self.scene_editing.pending_scene_edit,
             before,
             changed,
             pointer_down,
@@ -66,24 +66,24 @@ impl CameraManApp {
     }
 
     pub(super) fn undo_scene_edit(&mut self) -> bool {
-        let Some(previous) = self.undo_stack.pop() else {
+        let Some(previous) = self.scene_editing.undo_stack.pop() else {
             return false;
         };
         let current = self.scene_snapshot();
-        push_bounded(&mut self.redo_stack, current);
+        push_bounded(&mut self.scene_editing.redo_stack, current);
         self.restore_scene_snapshot(previous);
-        self.skip_history_commit = true;
+        self.scene_editing.skip_history_commit = true;
         true
     }
 
     pub(super) fn redo_scene_edit(&mut self) -> bool {
-        let Some(next) = self.redo_stack.pop() else {
+        let Some(next) = self.scene_editing.redo_stack.pop() else {
             return false;
         };
         let current = self.scene_snapshot();
-        push_bounded(&mut self.undo_stack, current);
+        push_bounded(&mut self.scene_editing.undo_stack, current);
         self.restore_scene_snapshot(next);
-        self.skip_history_commit = true;
+        self.scene_editing.skip_history_commit = true;
         true
     }
 
@@ -92,7 +92,7 @@ impl CameraManApp {
     }
 
     pub(super) fn save_current_scene(&mut self) -> Result<(), String> {
-        let name = self.scene_name_input.trim().to_owned();
+        let name = self.scene_editing.scene_name_input.trim().to_owned();
         let document = self.current_scene_document(name.clone());
         document
             .to_json_pretty()
@@ -125,14 +125,14 @@ impl CameraManApp {
         self.missing_source_policy = scene.missing_source_policy;
         self.fps_mode = scene.output_fps.map_or(FpsMode::Auto, FpsMode::Fixed);
         self.active_scene_name = Some(scene.name.clone());
-        self.scene_name_input = scene.name;
+        self.scene_editing.scene_name_input = scene.name;
         self.selected_source_id = self.selected_source_ids().into_iter().next();
         Ok(())
     }
 
     pub(super) fn validate_scene_import(&mut self) -> Result<(), String> {
-        let bytes = read_scene_file_bounded(&self.scene_path)?;
-        self.import_preview = Some(
+        let bytes = read_scene_file_bounded(&self.scene_editing.scene_path)?;
+        self.scene_editing.import_preview = Some(
             SceneDocument::from_json(&bytes)
                 .map_err(|error| format!("scene validation failed: {error}"))?,
         );
@@ -141,6 +141,7 @@ impl CameraManApp {
 
     pub(super) fn accept_scene_import(&mut self) -> Result<(), String> {
         let scene = self
+            .scene_editing
             .import_preview
             .take()
             .ok_or_else(|| String::from("validate a scene before importing it"))?;
@@ -162,12 +163,12 @@ impl CameraManApp {
     }
 
     pub(super) fn export_current_scene(&self) -> Result<(), String> {
-        let name = self.scene_name_input.trim().to_owned();
+        let name = self.scene_editing.scene_name_input.trim().to_owned();
         let bytes = self
             .current_scene_document(name)
             .to_json_pretty()
             .map_err(|error| error.to_string())?;
-        write_scene_file_atomic(&self.scene_path, &bytes)
+        write_scene_file_atomic(&self.scene_editing.scene_path, &bytes)
     }
 
     pub(super) fn prepare_sources(

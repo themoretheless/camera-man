@@ -51,6 +51,7 @@ use controller::{AppCommand, AppEvent, WorkflowState, reduce};
 use localization::{UiText, tr};
 use scene_commands::SceneEditCommand;
 use self_test::VirtualCameraSelfTest;
+use status_line::StatusEvent;
 use ui_contracts::*;
 use ui_tokens::*;
 
@@ -77,8 +78,6 @@ const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(8);
 const CAMERA_DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DEFAULT_SCENE_PATH: &str = "target/cameraman-scene.json";
 
-/// How long a non-error event (export confirmation etc.) stays in the status bar.
-const EVENT_TTL: Duration = Duration::from_secs(4);
 pub fn run() -> eframe::Result<()> {
     let fixture_capture = std::env::var_os("CAMERAMAN_UI_SCREENSHOT_TO").map(PathBuf::from);
     let preferences_path = fixture_capture
@@ -126,12 +125,6 @@ fn ui_fixture_target_size() -> [u32; 2] {
         .filter(|scale| matches!(scale, 1 | 2))
         .unwrap_or(1);
     [logical[0] * scale, logical[1] * scale]
-}
-
-/// A short-lived confirmation kept separate from sticky errors and live state.
-struct StatusEvent {
-    text: String,
-    at: Instant,
 }
 
 /// Derived undo/redo value. It can be rebuilt from runtime scene state and is
@@ -198,12 +191,6 @@ struct UiFixtureCapture {
     target_size: [u32; 2],
     settle_frames: u8,
     requested: bool,
-}
-
-impl StatusEvent {
-    fn is_visible(&self) -> bool {
-        self.at.elapsed() < EVENT_TTL
-    }
 }
 
 enum ProvisioningProfileStatus {
@@ -545,28 +532,6 @@ impl CameraManApp {
             missing_source_policy: self.output.missing_source_policy,
             scenes: self.scenes.clone(),
             active_scene_name: self.active_scene_name.clone(),
-        }
-    }
-
-    fn set_event(&mut self, text: impl Into<String>, is_error: bool) {
-        let text = text.into();
-        if is_error {
-            if self.sticky_error.as_deref() == Some(text.as_str()) {
-                return;
-            }
-            self.sticky_error = Some(text);
-        } else {
-            if self
-                .notice
-                .as_ref()
-                .is_some_and(|notice| notice.is_visible() && notice.text == text)
-            {
-                return;
-            }
-            self.notice = Some(StatusEvent {
-                text,
-                at: Instant::now(),
-            });
         }
     }
 

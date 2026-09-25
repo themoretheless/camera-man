@@ -63,7 +63,7 @@ use extension_readiness::{
     app_bundle_path_for_executable, extension_activation_metadata_from_value,
 };
 use extension_readiness::{extension_capability, provisioning_profile_status};
-use io_worker::{DEFAULT_DIAGNOSTICS_PATH, IoOperation, IoOutcome, IoWorker, RedactedDiagnostics};
+use io_worker::{DEFAULT_DIAGNOSTICS_PATH, IoOperation, IoWorker, RedactedDiagnostics};
 
 // Synthetic sources are solid colors. A 4:3 logical tile preserves their
 // composition geometry without allocating a 320x240 buffer every app tick.
@@ -772,65 +772,6 @@ impl CameraManApp {
             self.set_event(message, true);
         }
         self.capture_error_streak = self.capture_error_streak.saturating_add(1);
-    }
-
-    fn update_texture(&mut self, ctx: &egui::Context, image: std::sync::Arc<egui::ColorImage>) {
-        match self.preview_texture.as_mut() {
-            Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
-            None => {
-                self.preview_texture = Some(ctx.load_texture(
-                    "camera-man-preview",
-                    image,
-                    egui::TextureOptions::LINEAR,
-                ));
-            }
-        }
-        self.last_preview_upload = Instant::now();
-    }
-
-    fn export_preview(&mut self) {
-        let Some(frame) = self.preview.clone() else {
-            self.set_event("Nothing to export yet", true);
-            return;
-        };
-        let path = self.export_path.clone();
-        match self.io_worker.start_frame_export(frame, path.clone()) {
-            Ok(true) => self.set_event(format!("Exporting {}", path.display()), false),
-            Ok(false) => self.set_event("Another file operation is already running", true),
-            Err(error) => self.set_event(
-                format!("Frame export failed. {error} Check the destination and retry."),
-                true,
-            ),
-        }
-    }
-
-    fn cancel_file_operation(&mut self) {
-        if self.io_worker.cancel() {
-            self.set_event("Cancelling file operation", false);
-        }
-    }
-
-    fn poll_file_operation(&mut self) {
-        let Some(result) = self.io_worker.poll() else {
-            return;
-        };
-        let description = match result.operation {
-            IoOperation::FrameExport => "Frame export",
-            IoOperation::DiagnosticsExport => "Diagnostics export",
-        };
-        match result.outcome {
-            IoOutcome::Completed => self.set_event(
-                format!("{description} completed: {}", result.path.display()),
-                false,
-            ),
-            IoOutcome::Cancelled => self.set_event(format!("{description} cancelled"), false),
-            IoOutcome::Failed(error) => self.set_event(
-                format!(
-                    "{description} failed. {error} Check the destination, permissions, and free disk space, then retry."
-                ),
-                true,
-            ),
-        }
     }
 
     fn disconnect_virtual_output(&mut self) {

@@ -8,6 +8,8 @@ use std::thread;
 use camera_man::Frame;
 use serde::Serialize;
 
+use super::CameraManApp;
+
 pub(super) const DEFAULT_DIAGNOSTICS_PATH: &str = "target/cameraman-diagnostics.json";
 const DIAGNOSTICS_SCHEMA_VERSION: u32 = 1;
 const IO_ACTIVE: u8 = 0;
@@ -301,6 +303,37 @@ fn commit_if_active(path: &Path, bytes: &[u8], state: &AtomicU8) -> Result<(), S
     .map_err(|error| format!("could not atomically replace {}: {error}", path.display()))?
     .then_some(())
     .ok_or_else(|| String::from("cancelled"))
+}
+
+impl CameraManApp {
+    pub(super) fn poll_file_operation(&mut self) {
+        let Some(result) = self.io_worker.poll() else {
+            return;
+        };
+        let description = match result.operation {
+            IoOperation::FrameExport => "Frame export",
+            IoOperation::DiagnosticsExport => "Diagnostics export",
+        };
+        match result.outcome {
+            IoOutcome::Completed => self.set_event(
+                format!("{description} completed: {}", result.path.display()),
+                false,
+            ),
+            IoOutcome::Cancelled => self.set_event(format!("{description} cancelled"), false),
+            IoOutcome::Failed(error) => self.set_event(
+                format!(
+                    "{description} failed. {error} Check the destination, permissions, and free disk space, then retry."
+                ),
+                true,
+            ),
+        }
+    }
+
+    pub(super) fn cancel_file_operation(&mut self) {
+        if self.io_worker.cancel() {
+            self.set_event("Cancelling file operation", false);
+        }
+    }
 }
 
 #[cfg(test)]

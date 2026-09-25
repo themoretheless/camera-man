@@ -376,6 +376,19 @@ fn remap_camera_aliases(
     remapped
 }
 
+fn animated_color(base: [u8; 4], tick: u64, reduce_motion: bool) -> [u8; 4] {
+    if reduce_motion {
+        return base;
+    }
+    let wave = ((tick % 60) as i16 - 30).unsigned_abs() as i16;
+    [
+        base[0].saturating_add((wave / 4) as u8),
+        base[1].saturating_add((wave / 5) as u8),
+        base[2].saturating_add((wave / 6) as u8),
+        base[3],
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

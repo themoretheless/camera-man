@@ -545,47 +545,6 @@ impl CameraManApp {
     }
 }
 
-fn configure_style(ctx: &egui::Context, high_contrast: bool) {
-    ctx.set_visuals(egui::Visuals::dark());
-    ctx.all_styles_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-        style.spacing.button_padding = egui::vec2(12.0, 7.0);
-        style.visuals.panel_fill = COLOR_PANEL;
-        style.visuals.window_fill = COLOR_WINDOW;
-        style.visuals.widgets.inactive.bg_fill = COLOR_WIDGET;
-        style.visuals.widgets.hovered.bg_fill = COLOR_WIDGET_HOVER;
-        style.visuals.widgets.active.bg_fill = COLOR_WIDGET_ACTIVE;
-        if high_contrast {
-            style.visuals.override_text_color = Some(egui::Color32::WHITE);
-            style.visuals.selection.bg_fill = COLOR_FOCUS;
-            style.visuals.selection.stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
-            style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.5, egui::Color32::WHITE);
-            style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
-        }
-    });
-}
-
-fn animated_color(base: [u8; 4], tick: u64, reduce_motion: bool) -> [u8; 4] {
-    if reduce_motion {
-        return base;
-    }
-    let wave = ((tick % 60) as i16 - 30).unsigned_abs() as i16;
-    [
-        base[0].saturating_add((wave / 4) as u8),
-        base[1].saturating_add((wave / 5) as u8),
-        base[2].saturating_add((wave / 6) as u8),
-        base[3],
-    ]
-}
-
-fn move_item<T>(items: &mut [T], from: usize, to: usize) -> bool {
-    if from == to || from >= items.len() || to >= items.len() {
-        return false;
-    }
-    items.swap(from, to);
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,16 +583,6 @@ mod tests {
         assert!(!app_bundle_has_activation_location(Path::new(
             "/tmp/Applications/CameraMan.app"
         )));
-    }
-
-    #[test]
-    fn reorder_swaps_only_valid_distinct_items() {
-        let mut items = vec!["one", "two", "three"];
-
-        assert!(move_item(&mut items, 2, 1));
-        assert_eq!(items, ["one", "three", "two"]);
-        assert!(!move_item(&mut items, 1, 1));
-        assert!(!move_item(&mut items, 3, 0));
     }
 
     #[test]

@@ -329,9 +329,27 @@ fn history_baseline_after_pointer(
     }
 }
 
+fn move_item<T>(items: &mut [T], from: usize, to: usize) -> bool {
+    if from == to || from >= items.len() || to >= items.len() {
+        return false;
+    }
+    items.swap(from, to);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reorder_swaps_only_valid_distinct_items() {
+        let mut items = vec!["one", "two", "three"];
+
+        assert!(move_item(&mut items, 2, 1));
+        assert_eq!(items, ["one", "three", "two"]);
+        assert!(!move_item(&mut items, 1, 1));
+        assert!(!move_item(&mut items, 3, 0));
+    }
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]

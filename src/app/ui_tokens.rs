@@ -14,6 +14,26 @@ pub(super) const COLOR_WARNING: egui::Color32 = egui::Color32::from_rgb(214, 172
 pub(super) const COLOR_DIM: egui::Color32 = egui::Color32::from_gray(150);
 pub(super) const COLOR_PREVIEW_BACKGROUND: egui::Color32 = egui::Color32::BLACK;
 
+pub(super) fn configure_style(ctx: &egui::Context, high_contrast: bool) {
+    ctx.set_visuals(egui::Visuals::dark());
+    ctx.all_styles_mut(|style| {
+        style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+        style.spacing.button_padding = egui::vec2(12.0, 7.0);
+        style.visuals.panel_fill = COLOR_PANEL;
+        style.visuals.window_fill = COLOR_WINDOW;
+        style.visuals.widgets.inactive.bg_fill = COLOR_WIDGET;
+        style.visuals.widgets.hovered.bg_fill = COLOR_WIDGET_HOVER;
+        style.visuals.widgets.active.bg_fill = COLOR_WIDGET_ACTIVE;
+        if high_contrast {
+            style.visuals.override_text_color = Some(egui::Color32::WHITE);
+            style.visuals.selection.bg_fill = COLOR_FOCUS;
+            style.visuals.selection.stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
+            style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.5, egui::Color32::WHITE);
+            style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

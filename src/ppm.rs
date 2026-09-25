@@ -94,11 +94,6 @@ impl PpmSequenceSink {
         self.frames_sent
     }
 
-    pub fn next_path(&self) -> PathBuf {
-        let metadata = FrameMetadata::new(&self.prefix, self.frames_sent as u64 + 1);
-        self.path_for(&metadata)
-    }
-
     fn path_for(&self, metadata: &FrameMetadata) -> PathBuf {
         self.directory.join(format!(
             "{}-{:06}-{}.ppm",

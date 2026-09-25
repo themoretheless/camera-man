@@ -104,17 +104,6 @@ impl Compositor {
         })
     }
 
-    pub fn compose_borrowed_into(
-        &self,
-        frames: &[Option<&Frame>],
-        layout: CompositionLayout,
-        output: &mut Frame,
-    ) -> Result<(), CameraManError> {
-        self.compose_with(frames.len(), layout, output, |index| {
-            frames[index].map(|frame| (frame, SourceTransform::default()))
-        })
-    }
-
     fn compose_with<'a>(
         &self,
         frame_count: usize,

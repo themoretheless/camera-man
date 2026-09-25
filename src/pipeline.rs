@@ -267,10 +267,6 @@ where
         &self.sink
     }
 
-    pub fn sink_mut(&mut self) -> &mut Sink {
-        &mut self.sink
-    }
-
     fn compose_captured(&self, frames: &[Option<CapturedFrame>]) -> Result<Frame, CameraManError> {
         self.compositor.compose_captured(frames, self.layout)
     }

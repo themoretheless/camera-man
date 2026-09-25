@@ -287,10 +287,6 @@ impl ExperimentalCompositor {
         self.cpu.set_scaling_filter(filter);
     }
 
-    pub fn gpu_available(&self) -> bool {
-        self.gpu.is_some()
-    }
-
     pub fn route_counters(&self) -> (u64, u64) {
         (
             self.gpu_attempts.load(Ordering::Relaxed),

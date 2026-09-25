@@ -30,6 +30,15 @@ macOS FFI is never mistaken for pure-Rust verification.
   `v*` tag before a tagged release; the first release reports a deliberate no-op.
 - `cargo +nightly-2026-07-17 udeps --locked --all-targets --all-features`
   checks the complete target/feature graph. The 2026-07-18 local audit was clean.
+- The compositor keeps the generic sampling path as a reference for its two integer
+  fast paths. `opaque_transform_fast_path_matches_generic_reference` asserts byte
+  equality for the transformed path over every filter, fit, rotation, mirror, crop
+  and anchor, at two opacities. The untransformed path is asserted byte-exact as
+  well, except at nine listed destinations where integer fixed-point and `f32`
+  rounding land on opposite sides of a tie and differ by one step;
+  `untransformed_paste_reproduces_the_reference_except_at_listed_geometries` fails
+  when a rounding change moves geometries into or out of that list, which is why
+  the list is an allowlist rather than a tolerance.
 - Focused mutation CI targets only shared validation, frame-integrity,
   media-contract and provisioning invariants with strong test oracles.
 - `cameraman-benchmark-series` is the release-comparison profile. It requires

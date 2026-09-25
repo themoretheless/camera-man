@@ -1774,6 +1774,125 @@ mod tests {
         assert_eq!(output.bgra_at(0, 0), Some([116, 16, 16, 255]));
     }
 
+    /// Destinations where the untransformed integer bilinear and the `f32`
+    /// reference land on opposite sides of a rounding tie for the 13x9 fixture
+    /// source, measured 2026-09-25. Each one is off by a single step in one or
+    /// two bytes.
+    const UNTRANSFORMED_ROUNDING_EXCEPTIONS: &[(ScalingFilter, u32, u32)] = &[
+        (ScalingFilter::Bilinear, 22, 15),
+        (ScalingFilter::Bilinear, 22, 16),
+        (ScalingFilter::Bilinear, 22, 17),
+        (ScalingFilter::Bilinear, 22, 18),
+        (ScalingFilter::Bilinear, 23, 15),
+        (ScalingFilter::Bilinear, 24, 15),
+        (ScalingFilter::Bilinear, 25, 15),
+        (ScalingFilter::Bilinear, 26, 15),
+        (ScalingFilter::Bilinear, 26, 18),
+    ];
+
+    /// Composing through the untransformed paste path must give the same bytes
+    /// as composing through the generic reference, except at the geometries
+    /// listed in [`UNTRANSFORMED_ROUNDING_EXCEPTIONS`].
+    ///
+    /// Sweeping every destination from 1x1 to 26x18 for a 13x9 source with both
+    /// filters, 927 of 936 combinations are byte-identical. The nine that are
+    /// not are all bilinear and all off by one step, which is where integer
+    /// fixed-point and `f32` premultiplied rounding land on different sides of
+    /// a tie. Exactness is the assertion and the exceptions are the reviewed
+    /// residue, so a change to either path's rounding moves dozens of
+    /// combinations out of the identical set and fails here; asserting a
+    /// tolerance instead would have passed with round-half-up deleted entirely.
+    #[test]
+    fn untransformed_paste_reproduces_the_reference_except_at_listed_geometries() {
+        let mut pixels = Vec::new();
+        for y in 0..9_u8 {
+            for x in 0..13_u8 {
+                pixels.extend_from_slice(&[
+                    x.wrapping_mul(31).wrapping_add(y * 3),
+                    y.wrapping_mul(43).wrapping_add(x * 5),
+                    x.wrapping_mul(11).wrapping_add(y * 17),
+                    255,
+                ]);
+            }
+        }
+        let input = Frame::new_checked(13, 9, PixelFormat::Bgra8, pixels).unwrap();
+        let mut unexpected = Vec::new();
+        let mut listed = Vec::new();
+        for filter in [ScalingFilter::Nearest, ScalingFilter::Bilinear] {
+            for width in 1_u32..=26 {
+                for height in 1_u32..=18 {
+                    let compositor = Compositor::new(VideoFormat {
+                        width,
+                        height,
+                        fps: 30,
+                        pixel_format: PixelFormat::Bgra8,
+                    })
+                    .with_scaling_filter(filter);
+                    let fast = compositor
+                        .compose(&[Some(input.clone())], CompositionLayout::Grid)
+                        .unwrap();
+                    let cell = Cell {
+                        x: 0,
+                        y: 0,
+                        width,
+                        height,
+                    };
+                    let mut reference =
+                        Frame::solid_bgra(width, height, [32, 32, 32, 255]).unwrap();
+                    paste_contract_transformed_generic(
+                        &mut reference,
+                        &input,
+                        filter,
+                        input.contract(),
+                        TRANSFORM_SCALE,
+                        transformed_placement(input.contract(), cell, SourceTransform::default()),
+                    );
+                    if fast.data() == reference.data() {
+                        continue;
+                    }
+                    let geometry = (filter, width, height);
+                    let mut worst_step = 0_u64;
+                    let mut alpha_exact = true;
+                    for (index, (fast, reference)) in
+                        fast.data().iter().zip(reference.data()).enumerate()
+                    {
+                        let delta = u64::from(*fast).abs_diff(u64::from(*reference));
+                        worst_step = worst_step.max(delta);
+                        alpha_exact &= index % 4 != 3 || delta == 0;
+                    }
+                    // One step is the whole story of the residue; anything
+                    // larger means the paths disagree about pixels, not ties.
+                    assert_eq!(
+                        worst_step, 1,
+                        "{geometry:?} disagrees by {worst_step} steps, not a rounding tie"
+                    );
+                    assert!(alpha_exact, "{geometry:?} disagrees in alpha");
+                    if UNTRANSFORMED_ROUNDING_EXCEPTIONS.contains(&geometry) {
+                        listed.push(geometry);
+                    } else {
+                        unexpected.push(geometry);
+                    }
+                }
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "untransformed paste diverged from the reference at geometries nobody \
+             measured: {unexpected:?}. One path's rounding changed; re-sweep the \
+             1x1..26x18 grid and re-list what still differs by a single step."
+        );
+        let missing: Vec<_> = UNTRANSFORMED_ROUNDING_EXCEPTIONS
+            .iter()
+            .filter(|geometry| !listed.contains(geometry))
+            .copied()
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these geometries are listed as rounding exceptions but now match exactly, \
+             so the list is stale: {missing:?}"
+        );
+    }
+
     fn frame_as_ascii_ppm(frame: &Frame) -> String {
         let mut output = format!("P3\n{} {}\n255\n", frame.width(), frame.height());
         for y in 0..frame.height() {

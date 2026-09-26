@@ -581,10 +581,14 @@ Implemented research-backed design:
 
 ## Next Milestones
 
-1. Release evidence: execute the eight-hour fixed-hardware acceptance gate and a notarized paid-profile install through a real third-party consumer.
-2. Dependency maintenance: remove `block 0.1.6` when a compatible camera backend release exists; keep the exact exception guard until then.
-3. Copy reduction: use the ledger to evaluate IOSurface/wgpu without weakening the fixed CPU correctness fallback.
-4. Capture boundary: replace or wrap the backend only if hardware tests can provide a genuinely cancelable camera-open operation.
+The ranked backlog with its measured numbers and readiness evidence is Milestone
+E in `docs/milestones.md`. Its head:
+
+1. Capture boundary: a `FrameSource` adapter with a bounded `stop()`, because nokhwa's frame read cannot be cancelled and the current watchdogs only detect the stall.
+2. Dependency maintenance: that same adapter removes `block 0.1.6`, `paste` and `spin`, all of which enter the graph only through nokhwa.
+3. Release evidence: run the existing eight-hour soak against the signed App Group path, then record the physical camera -> signed CMIO -> third-party consumer profile, which needs a paid profile and clean hardware.
+4. Copy reduction: IOSurface publication only on a measured ledger win without CPU readback.
+5. Then the media loop out of the UI, the preview conversion benchmark, and cache ownership.
 
 ## Three Iterations
 

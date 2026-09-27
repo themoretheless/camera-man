@@ -16,6 +16,7 @@ pub mod benchmarking;
 pub mod camera;
 #[cfg(feature = "camera-capture")]
 pub mod capture;
+#[cfg(feature = "avcapture-experiment")]
 pub mod client_authorization;
 pub mod config;
 pub mod diagnostics;
@@ -29,6 +30,8 @@ pub mod gpu_experiment;
 pub mod invalidation;
 pub mod layout;
 pub mod media_contract;
+#[cfg(feature = "avcapture-experiment")]
+pub mod av_capture;
 pub mod media_time;
 #[cfg(all(target_os = "macos", feature = "metal-interop-experiment"))]
 pub mod metal_interop;
@@ -62,6 +65,8 @@ pub use capture::{
 pub use client_authorization::{
     ClientAuthorization, ClientDenialReason, ClientIdentity, authorize_client,
 };
+#[cfg(feature = "avcapture-experiment")]
+pub use av_capture::AvCaptureProbe;
 pub use config::{
     VIRTUAL_CAMERA_DEFAULT_FPS, VIRTUAL_CAMERA_DEVICE_NAME, VIRTUAL_CAMERA_DEVICE_UID,
     VIRTUAL_CAMERA_FPS_PRESETS, VIRTUAL_CAMERA_HEIGHT, VIRTUAL_CAMERA_MAX_FPS,

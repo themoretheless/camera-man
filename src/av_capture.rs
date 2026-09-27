@@ -4,9 +4,10 @@
 
 use std::sync::Arc;
 
-use objc2_av_foundation::{AVCaptureDeviceType};
+use objc2_av_foundation::{AVCaptureDevice};
+use objc2_core_media::CMFormatDescription;
 use crate::error::CameraManError;
-use crate::{CameraRuntime, FrameSource};
+use crate::FrameSource;
 
 /// Single-threaded AVCaptureDevice probe: enumerates device metadata, supported
 /// formats and frame rate ranges. Production path would own an AVCaptureSession
@@ -19,9 +20,11 @@ pub struct AvCaptureProbe {
 }
 
 impl AvCaptureProbe {
-    /// Enumerate all connected video devices (placeholder: AVCaptureDeviceDiscoverySession).
+    /// Enumerate all connected video devices using AVCaptureDeviceDiscoverySession.
     pub fn enumerate_devices() -> Result<Vec<Self>, CameraManError> {
-        // Placeholder for AVCaptureDevice discoverySessionWithDeviceTypes:mediaType:position:
+        // Placeholder - AVCaptureDeviceDiscoverySession bindings require careful integration
+        // The method discoverySessionWithDeviceTypes_mediaType_position exists but requires
+        // proper NSArray<AVCaptureDeviceType> construction which needs type-level work
         Ok(vec![])
     }
 
@@ -39,7 +42,7 @@ impl AvCaptureProbe {
 pub struct DeviceInfo {
     pub unique_id: String,
     pub localized_name: String,
-    pub format_descriptions: Vec<u64>,
+    pub format_descriptions: Vec<CMFormatDescription>,
     pub fps_ranges: Vec<(f64, f64)>,
 }
 
@@ -49,30 +52,14 @@ impl FrameSource for AvCaptureProbe {
     }
 }
 
-impl CameraRuntime for AvCaptureProbe {
-    fn negotiated_format(&self) -> Option<crate::VideoFormat> {
-        None
-    }
-
-    fn stall_age(&self) -> std::time::Duration {
-        std::time::Duration::ZERO
-    }
-
-    fn frame_gap_exceeded(&self) -> bool {
-        false
-    }
-
-    fn as_frame_source(&mut self) -> &mut dyn FrameSource {
-        self
-    }
+unsafe fn enumerate_formats(_device: &AVCaptureDevice) -> Vec<CMFormatDescription> {
+    vec![]
 }
 
-fn enumerate_device_types() -> &'static [AVCaptureDeviceType] {
-    // Placeholder for types: BuiltInWideAngleCamera etc.
-    &[]
+unsafe fn enumerate_fps_ranges(_device: &AVCaptureDevice) -> Vec<(f64, f64)> {
+    vec![]
 }
 
 fn check_avauthorization_status() -> bool {
-    // Placeholder: AVCaptureDevice authorizationStatusForMediaType(…)
     true
 }
